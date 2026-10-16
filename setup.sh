@@ -1,14 +1,18 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # GARNT TOOL REJOIN installer (safe to re-run). Replace <USER>/<REPO> with your GitHub repo.
 set -e
-RAW="https://github.com/Garnt024020806/TOOL/blob/main"
+RAW="https://raw.githubusercontent.com/<USER>/<REPO>/main"
 DIR="/storage/emulated/0/Download/RejoinTool"
 export DEBIAN_FRONTEND=noninteractive
+# Keep existing config files on conffile prompts so apt never waits for input.
+APT="apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
 echo "[1/5] อัปเดตและติดตั้งแพ็กเกจ..."
 # </dev/null: stdin is the piped script under `curl | bash`, so keep tools from reading it
-pkg update -y </dev/null && pkg upgrade -y </dev/null
-pkg install -y python tsu termux-api curl </dev/null
+dpkg --configure -a --force-confold </dev/null || true   # self-heal an interrupted earlier run
+$APT update </dev/null
+$APT upgrade </dev/null
+$APT install python tsu termux-api curl </dev/null
 
 echo "[2/5] ตรวจสอบสิทธิ์ที่เก็บข้อมูล..."
 if ! ls /sdcard/Download >/dev/null 2>&1; then
