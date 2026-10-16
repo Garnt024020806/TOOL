@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # GARNT TOOL REJOIN installer (safe to re-run). Replace <USER>/<REPO> with your GitHub repo.
 set -e
-RAW="https://raw.githubusercontent.com/<USER>/<REPO>/main"
+RAW="https://github.com/Garnt024020806/TOOL/blob/main"
 DIR="/storage/emulated/0/Download/RejoinTool"
 export DEBIAN_FRONTEND=noninteractive
 
