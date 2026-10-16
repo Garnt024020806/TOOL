@@ -2,7 +2,6 @@
 # GARNT TOOL REJOIN installer (safe to re-run). Replace <USER>/<REPO> with your GitHub repo.
 set -e
 RAW="https://raw.githubusercontent.com/<USER>/<REPO>/main"
-DIR="/storage/emulated/0/Download/RejoinTool"
 export DEBIAN_FRONTEND=noninteractive
 # Keep existing config files on conffile prompts so apt never waits for input.
 APT="apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
@@ -22,7 +21,15 @@ fi
 ls /sdcard/Download >/dev/null 2>&1 || { echo "ไม่ได้รับอนุญาตเข้าถึงที่เก็บข้อมูล — กด 'อนุญาต' แล้วรัน setup.sh ใหม่"; exit 1; }
 
 echo "[3/5] สร้างโฟลเดอร์..."
-mkdir -p "$DIR"/{logs,screenshots}
+# Plain Termux often cannot see /storage/emulated/0 but can use /sdcard; both are the same folder under su.
+DIR=""
+for d in /storage/emulated/0/Download/RejoinTool /sdcard/Download/RejoinTool; do
+  if mkdir -p "$d/logs" "$d/screenshots" 2>/dev/null && touch "$d/.w" 2>/dev/null; then
+    rm -f "$d/.w"; DIR="$d"; break
+  fi
+done
+[ -n "$DIR" ] || { echo "สร้างโฟลเดอร์ใน Download ไม่ได้ — รัน termux-setup-storage กด 'อนุญาต' แล้วรัน setup.sh ใหม่"; exit 1; }
+echo "ใช้โฟลเดอร์: $DIR"
 
 echo "[4/5] ดาวน์โหลดไฟล์และติดตั้งไลบรารี..."
 for f in rejoin.py requirements.txt; do
@@ -42,4 +49,4 @@ echo ""
 echo "ติดตั้งเสร็จแล้ว! รันด้วย Root:"
 echo '  su -c "export PATH=$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && cd /storage/emulated/0/Download/RejoinTool && python ./rejoin.py"'
 echo "หรือพิมพ์คำสั่งลัด:  rejoin"
-echo "ถ้าไม่มี Root:  cd /storage/emulated/0/Download/RejoinTool && python rejoin.py"
+echo "ถ้าไม่มี Root:  cd $DIR && python rejoin.py"
