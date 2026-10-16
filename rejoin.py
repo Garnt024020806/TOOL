@@ -25,11 +25,35 @@ except ImportError:
     print("ไม่พบโมดูล rich/requests -> รัน: python -m pip install -r /storage/emulated/0/Download/RejoinTool/requirements.txt")
     sys.exit(1)
 
-BASE = "/storage/emulated/0/Download/RejoinTool"
-LOG_DIR = BASE + "/logs"
-SHOT_DIR = BASE + "/screenshots"
-CONFIG_FILE = BASE + "/config.json"
-COOKIE_FILE = BASE + "/cookie.txt"
+BASE_CHOICES = ("/storage/emulated/0/Download/RejoinTool", "/sdcard/Download/RejoinTool")
+BASE = LOG_DIR = SHOT_DIR = CONFIG_FILE = COOKIE_FILE = ""
+
+
+def set_base(base):
+    global BASE, LOG_DIR, SHOT_DIR, CONFIG_FILE, COOKIE_FILE
+    BASE = base
+    LOG_DIR, SHOT_DIR = base + "/logs", base + "/screenshots"
+    CONFIG_FILE, COOKIE_FILE = base + "/config.json", base + "/cookie.txt"
+
+
+def pick_base():
+    """Use the first storage path this process can actually write to."""
+    first_err = None
+    for base in BASE_CHOICES:
+        try:
+            os.makedirs(base + "/logs", exist_ok=True)
+            os.makedirs(base + "/screenshots", exist_ok=True)
+            with open(base + "/.w", "w") as f:
+                f.write("ok")
+            os.remove(base + "/.w")
+            set_base(base)
+            return True, None
+        except OSError as e:
+            first_err = first_err or e
+    return False, first_err
+
+
+set_base(BASE_CHOICES[0])
 PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
 ENV = dict(os.environ, PATH=os.environ.get("PATH", "") + ":" + PREFIX + "/bin:/system/bin:/system/xbin")
 ENV.pop("LD_LIBRARY_PATH", None)
@@ -158,14 +182,9 @@ def wake(lock=True):
 # ---------- startup ----------
 def startup():
     global HAS_ROOT
-    try:
-        for d in (LOG_DIR, SHOT_DIR):
-            os.makedirs(d, exist_ok=True)
-        with open(BASE + "/.w", "w") as f:
-            f.write("ok")
-        os.remove(BASE + "/.w")
-    except OSError as e:
-        say(f"✖ เข้าถึงที่เก็บข้อมูลไม่ได้ ({e.strerror})", "red")
+        ok, err = pick_base()
+    if not ok:
+        say(f"✖ เข้าถึงที่เก็บข้อมูลไม่ได้ ({err.strerror})", "red")
         say("  รัน termux-setup-storage แล้วกด 'อนุญาต' จากนั้นรัน setup.sh ใหม่", "yellow")
         sys.exit(1)
     prune_logs()
