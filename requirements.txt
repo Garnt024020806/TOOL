@@ -1,0 +1,2 @@
+rich>=13.0      # terminal UI: tables, panels, live status view
+requests>=2.28  # Discord webhook (JSON + multipart screenshot upload)
