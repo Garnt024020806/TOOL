@@ -1,0 +1,41 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# GARNT TOOL REJOIN installer (safe to re-run). Replace <USER>/<REPO> with your GitHub repo.
+set -e
+RAW="https://raw.githubusercontent.com/<USER>/<REPO>/main"
+DIR="/storage/emulated/0/Download/RejoinTool"
+export DEBIAN_FRONTEND=noninteractive
+
+echo "[1/5] อัปเดตและติดตั้งแพ็กเกจ..."
+# </dev/null: stdin is the piped script under `curl | bash`, so keep tools from reading it
+pkg update -y </dev/null && pkg upgrade -y </dev/null
+pkg install -y python tsu termux-api curl </dev/null
+
+echo "[2/5] ตรวจสอบสิทธิ์ที่เก็บข้อมูล..."
+if ! ls /sdcard/Download >/dev/null 2>&1; then
+  termux-setup-storage </dev/null || true
+  for _ in $(seq 1 30); do ls /sdcard/Download >/dev/null 2>&1 && break; sleep 2; done
+fi
+ls /sdcard/Download >/dev/null 2>&1 || { echo "ไม่ได้รับอนุญาตเข้าถึงที่เก็บข้อมูล — กด 'อนุญาต' แล้วรัน setup.sh ใหม่"; exit 1; }
+
+echo "[3/5] สร้างโฟลเดอร์..."
+mkdir -p "$DIR"/{logs,screenshots}
+
+echo "[4/5] ดาวน์โหลดไฟล์และติดตั้งไลบรารี..."
+for f in rejoin.py requirements.txt; do
+  curl -fsSL "$RAW/$f" -o "$DIR/$f" || { echo "ดาวน์โหลด $f ไม่สำเร็จ — ตรวจสอบอินเทอร์เน็ตหรือ URL ของ GitHub"; exit 1; }
+done
+python -m pip install -r "$DIR/requirements.txt" </dev/null \
+  || python -m pip install --break-system-packages -r "$DIR/requirements.txt" </dev/null
+
+echo "[5/5] สร้างคำสั่งลัด rejoin..."
+cat > "$PREFIX/bin/rejoin" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+exec su -c "export PATH=$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && cd /storage/emulated/0/Download/RejoinTool && python ./rejoin.py"
+EOF
+chmod +x "$PREFIX/bin/rejoin"
+
+echo ""
+echo "ติดตั้งเสร็จแล้ว! รันด้วย Root:"
+echo '  su -c "export PATH=$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && cd /storage/emulated/0/Download/RejoinTool && python ./rejoin.py"'
+echo "หรือพิมพ์คำสั่งลัด:  rejoin"
+echo "ถ้าไม่มี Root:  cd /storage/emulated/0/Download/RejoinTool && python rejoin.py"
