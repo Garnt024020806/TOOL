@@ -390,7 +390,9 @@ def read_cookies():
                 l = line.strip()
                 if not l or l.startswith("#"):
                     continue
-                res.append(clean_cookie(l))
+                cookie = clean_cookie(l)
+                if cookie:
+                    res.append(cookie)
     except OSError:
         return []
     SECRETS.update(res)
@@ -536,7 +538,8 @@ class Hook:
         w = self.cfg.d["webhook"]
         if event != "test" and not (w["enabled"] and w["events"].get(event)):
             return True
-        if not w["url"]:
+        if not HOOK_RE.fullmatch(str(w.get("url", ""))):
+            log.warning("Webhook URL ไม่ถูกต้อง")
             return False
         embed = {"title": scrub(title), "description": scrub(desc), "color": EV_COLOR.get(event, 0),
                  "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": "GARNT TOOL REJOIN"},
@@ -744,7 +747,9 @@ class Engine:
         delay = 0
         if reason != "timed":
             inst.fails += 1
-            delay = min(int(c["backoff_max"]), int(c["backoff_base"]) * 2 ** (inst.fails - 1))
+            base = min(3600, max(1, int(c["backoff_base"])))
+            maximum = min(86400, max(base, int(c["backoff_max"])))
+            delay = min(maximum, base * (1 << min(inst.fails - 1, 17)))
             self.event("%s: %s (ครั้งที่ %d) รีจอยใน %ds" % (inst.label, REASON[reason], inst.fails, delay), "red")
             shot = take_shot(inst.pkg) if c["auto"]["screenshot_on_crash"] else None
             self.hook.send("crash", "⚠️ หลุด/ค้าง", inst.label,
