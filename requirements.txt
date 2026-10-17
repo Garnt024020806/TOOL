@@ -1,2 +1,2 @@
-rich>=13.0      # terminal UI: tables, panels, live status view
-requests>=2.28  # Discord webhook (JSON + multipart screenshot upload)
+rich>=13.7        # tables, live status panel and colored CLI menus
+requests>=2.31    # Roblox web API (cookie check / in-game presence) and Discord webhook uploads
