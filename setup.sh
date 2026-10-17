@@ -25,7 +25,7 @@ run curl -fsSL "$RAW/requirements.txt" -o "$TMPD/requirements.txt" || die "ด�
 run pip install -r "$TMPD/requirements.txt" || die "pip install ไม่สำเร็จ"
 
 say "5/6 ขอสิทธิ์เข้าถึงที่เก็บข้อมูล (กด 'อนุญาต' ในหน้าต่างที่เด้งขึ้นมา)"
-run termux-setup-storage
+run termux-setup-storage && yes
 for i in $(seq 1 30); do
   [ -w "$DL" ] && break
   sleep 2
