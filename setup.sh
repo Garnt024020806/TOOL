@@ -20,9 +20,9 @@ run pkg install -y python curl || die "ติดตั้ง python ไม่ส
 say "3/6 ติดตั้ง tsu (สิทธิ์รูท)"
 run pkg install -y tsu || die "ติดตั้ง tsu ไม่สำเร็จ"
 
-say "4/6 ติดตั้งไลบรารี Python (pip install -r requirements.txt)"
+say "4/6 ติดตั้งไลบรารี Python (python -m pip install -r requirements.txt)"
 run curl -fsSL "$RAW/requirements.txt" -o "$TMPD/requirements.txt" || die "ดาวน์โหลด requirements.txt ไม่สำเร็จ (เช็กอินเทอร์เน็ต/ลิงก์ GitHub)"
-run pip install -r "$TMPD/requirements.txt" || die "pip install ไม่สำเร็จ"
+run python -m pip install -r "$TMPD/requirements.txt" || die "pip install ไม่สำเร็จ"
 
 say "5/6 ขอสิทธิ์เข้าถึงที่เก็บข้อมูล (กด 'อนุญาต' ในหน้าต่างที่เด้งขึ้นมา)"
 run termux-setup-storage
