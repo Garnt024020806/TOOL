@@ -327,24 +327,22 @@ def open_game(pkg, uri, force_stop, floating=False):
     if ENV.root and force_stop:
         sh("am force-stop " + q(pkg), root=True, timeout=20)
         time.sleep(2)
-    window_mode = "--windowingMode 5 " if floating and ENV.root else ""
+    window_mode = "--windowingMode 5 " if floating else ""
     cmd = "am start %s-a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (window_mode, q(uri), q(pkg))
     rc, out = sh(cmd, root=ENV.root, timeout=30)
     if rc != 0 or re.search(r"Error|Exception|unable to resolve", out, re.I):
-        if floating and ENV.root:
+        if floating:
             # Some Android builds reject freeform launch options; still open the game normally.
             cmd = "am start -a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
-            rc, out = sh(cmd, root=True, timeout=30)
+            rc, out = sh(cmd, root=ENV.root, timeout=30)
             if rc == 0 and not re.search(r"Error|Exception|unable to resolve", out, re.I):
                 return True, "เครื่องไม่รองรับหน้าต่างลอย เปิดเกมแบบเต็มจอแทน"
         rc, out2 = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % q(pkg), root=ENV.root, timeout=30)
         if rc != 0:
             return False, scrub((out + out2).strip()[:200])
         return True, "เปิดแอปแล้วแต่ลิงก์เกมไม่ทำงาน (ใช้ launcher แทน)"
-    if floating and ENV.root:
-        return True, "ส่งคำสั่งเปิดแบบหน้าต่างลอยแล้ว"
     if floating:
-        return True, "ต้องใช้รูทเพื่อบังคับหน้าต่างลอย; เปิดแบบเต็มจอ"
+        return True, "ส่งคำสั่งเปิดแบบหน้าต่างลอยแล้ว"
     return True, "ok"
 
 
@@ -1030,7 +1028,7 @@ AUTO_ITEMS = [
     ("start_on_launch", "เริ่มรีจอยทันทีเมื่อเปิดเครื่องมือ", False),
     ("wake_lock", "เปิด Wake-lock ขณะรัน", False),
     ("force_stop", "Force-stop ก่อนเปิดเกมใหม่", True),
-    ("floating_window", "บังคับเปิด Roblox เป็นหน้าต่างลอย", True),
+    ("floating_window", "บังคับเปิด Roblox เป็นหน้าต่างลอย", False),
     ("foreground_check", "ตรวจว่าแอปอยู่หน้าจอ", True),
     ("screenshot_on_crash", "แคปหน้าจอเมื่อหลุด/ค้าง", True),
     ("cookie_login_on_start", "ล็อกอินด้วยคุกกี้อัตโนมัติก่อนเริ่ม", True),
