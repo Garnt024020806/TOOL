@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # GARNT TOOL REJOIN installer (safe to re-run). Replace <USER>/<REPO> with your GitHub repo.
 set -e
-RAW="https://raw.githubusercontent.com/Garnt024020806/TOOL/refs/heads/main/rejoin.py"
+RAW="https://raw.githubusercontent.com/Garnt024020806/TOOL/main"
 export DEBIAN_FRONTEND=noninteractive
 # Keep existing config files on conffile prompts so apt never waits for input.
 APT="apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
