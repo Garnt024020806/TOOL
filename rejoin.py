@@ -141,6 +141,7 @@ DEFAULTS = {
         "start_on_launch": False,
         "wake_lock": True,
         "force_stop": True,
+        "floating_window": True,
         "foreground_check": False,
         "screenshot_on_crash": True,
         "cookie_login_on_start": False,
@@ -321,18 +322,29 @@ def parse_link(link):
     return None
 
 
-def open_game(pkg, uri, force_stop):
+def open_game(pkg, uri, force_stop, floating=False):
     q = shlex.quote
     if ENV.root and force_stop:
         sh("am force-stop " + q(pkg), root=True, timeout=20)
         time.sleep(2)
-    cmd = "am start -a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
+    window_mode = "--windowingMode 5 " if floating and ENV.root else ""
+    cmd = "am start %s-a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (window_mode, q(uri), q(pkg))
     rc, out = sh(cmd, root=ENV.root, timeout=30)
     if rc != 0 or re.search(r"Error|Exception|unable to resolve", out, re.I):
+        if floating and ENV.root:
+            # Some Android builds reject freeform launch options; still open the game normally.
+            cmd = "am start -a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
+            rc, out = sh(cmd, root=True, timeout=30)
+            if rc == 0 and not re.search(r"Error|Exception|unable to resolve", out, re.I):
+                return True, "เครื่องไม่รองรับหน้าต่างลอย เปิดเกมแบบเต็มจอแทน"
         rc, out2 = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % q(pkg), root=ENV.root, timeout=30)
         if rc != 0:
             return False, scrub((out + out2).strip()[:200])
         return True, "เปิดแอปแล้วแต่ลิงก์เกมไม่ทำงาน (ใช้ launcher แทน)"
+    if floating and ENV.root:
+        return True, "ส่งคำสั่งเปิดแบบหน้าต่างลอยแล้ว"
+    if floating:
+        return True, "ต้องใช้รูทเพื่อบังคับหน้าต่างลอย; เปิดแบบเต็มจอ"
     return True, "ok"
 
 
@@ -681,15 +693,15 @@ class Engine:
             if self.stop.is_set():
                 return False
             inst.state, inst.detail = "launching", ""
-            ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"])
+            ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"], c["auto"]["floating_window"])
             self.last_launch = time.time()
         inst.launched_at = time.time()
-        inst.state, inst.detail = "joining", "รอเข้าเกม"
+        inst.state, inst.detail = "joining", "รอเข้าเกม" if msg == "ok" else msg
         if not ok:
             self.event("%s: เปิดเกมไม่สำเร็จ: %s" % (inst.label, msg), "red")
             return True
         if kind == "start":
-            self.event("%s: เปิดเกมแล้ว" % inst.label, "green")
+            self.event("%s: %s" % (inst.label, "เปิดเกมแล้ว" if msg == "ok" else msg), "green")
         else:
             inst.rejoins += 1
             self.event("%s: รีจอยแล้ว (ครั้งที่ %d)" % (inst.label, inst.rejoins), "cyan")
@@ -1018,6 +1030,7 @@ AUTO_ITEMS = [
     ("start_on_launch", "เริ่มรีจอยทันทีเมื่อเปิดเครื่องมือ", False),
     ("wake_lock", "เปิด Wake-lock ขณะรัน", False),
     ("force_stop", "Force-stop ก่อนเปิดเกมใหม่", True),
+    ("floating_window", "บังคับเปิด Roblox เป็นหน้าต่างลอย", True),
     ("foreground_check", "ตรวจว่าแอปอยู่หน้าจอ", True),
     ("screenshot_on_crash", "แคปหน้าจอเมื่อหลุด/ค้าง", True),
     ("cookie_login_on_start", "ล็อกอินด้วยคุกกี้อัตโนมัติก่อนเริ่ม", True),
