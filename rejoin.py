@@ -613,6 +613,7 @@ class Engine:
         self.last_launch = 0.0
         self.events = deque(maxlen=10)
         self.threads = []
+        self.launch_thread = None
         self.t0 = time.time()
 
     # -- helpers
@@ -629,13 +630,24 @@ class Engine:
         self.hook.send("start", "▶️ เริ่มรีจอยอัตโนมัติ", "เริ่มจัดการ %d อินสแตนซ์" % len(self.insts),
                        [("โหมด", "ROOT" if ENV.root else "ไม่รูท"), ("ตรวจทุก", "%ds" % self.interval()),
                         ("แพ็กเกจ", ", ".join(i.pkg for i in self.insts))])
+        self.launch_thread = threading.Thread(target=self._launch_sequence, daemon=True)
+        self.launch_thread.start()
+
+    def _launch_sequence(self):
+        """Launch selected packages in order; keep each one monitored while the next starts."""
         for inst in self.insts:
+            if self.stop.is_set() or not self._launch(inst, "start"):
+                break
+            if self.stop.is_set():
+                break
             t = threading.Thread(target=self._worker, args=(inst,), daemon=True)
             t.start()
             self.threads.append(t)
 
     def shutdown(self):
         self.stop.set()
+        if self.launch_thread:
+            self.launch_thread.join(timeout=5)
         for t in self.threads:
             t.join(timeout=5)
         wake_lock(False)
@@ -647,8 +659,6 @@ class Engine:
     # -- worker
     def _worker(self, inst):
         try:
-            if not self._launch(inst, "start"):
-                return
             while True:
                 inst.next_at = time.time() + self.interval()
                 if self.stop.wait(self.interval()):
@@ -816,7 +826,7 @@ def onoff(v):
 
 
 def banner(cfg):
-    console.clear()
+    console.clear(home=True)
     console.print(Text(LOGO.strip("\n"), style="bold cyan"), highlight=False)
     console.print(Text("      T O O L   R E J O I N   •   ควายเผือก rejoin   •   v" + VERSION, style="bold magenta"))
     link = bool(cfg.d["game_link"])
@@ -866,6 +876,7 @@ def menu_start(cfg, hook):
     if cfg.d["auto"]["wake_lock"]:
         wake_lock(True)
     eng = Engine(cfg, hook, parsed[0], insts)
+    console.clear(home=True)
     eng.start()
     try:
         with Live(get_renderable=eng.render, console=console, refresh_per_second=2):
