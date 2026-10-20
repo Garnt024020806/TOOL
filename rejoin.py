@@ -16,7 +16,9 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import TimedRotatingFileHandler
+from urllib.parse import parse_qs, urlparse
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -36,7 +38,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.0"
+VERSION = "1.1"
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
   ____    _    ____  _   _ _____
@@ -141,13 +143,13 @@ DEFAULTS = {
         "start_on_launch": False,
         "wake_lock": True,
         "force_stop": True,
-        "floating_window": True,
         "foreground_check": False,
         "screenshot_on_crash": True,
         "cookie_login_on_start": False,
         "presence_check": True,
         "timed_rejoin_min": 0,
     },
+    "heartbeat": {"enabled": False, "port": 8765, "interval": 15, "timeout": 90},
     "webhook": {
         "url": "",
         "enabled": False,
@@ -322,27 +324,18 @@ def parse_link(link):
     return None
 
 
-def open_game(pkg, uri, force_stop, floating=False):
+def open_game(pkg, uri, force_stop):
     q = shlex.quote
     if ENV.root and force_stop:
         sh("am force-stop " + q(pkg), root=True, timeout=20)
         time.sleep(2)
-    window_mode = "--windowingMode 5 " if floating else ""
-    cmd = "am start %s-a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (window_mode, q(uri), q(pkg))
+    cmd = "am start -a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
     rc, out = sh(cmd, root=ENV.root, timeout=30)
     if rc != 0 or re.search(r"Error|Exception|unable to resolve", out, re.I):
-        if floating:
-            # Some Android builds reject freeform launch options; still open the game normally.
-            cmd = "am start -a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
-            rc, out = sh(cmd, root=ENV.root, timeout=30)
-            if rc == 0 and not re.search(r"Error|Exception|unable to resolve", out, re.I):
-                return True, "เครื่องไม่รองรับหน้าต่างลอย เปิดเกมแบบเต็มจอแทน"
         rc, out2 = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % q(pkg), root=ENV.root, timeout=30)
         if rc != 0:
             return False, scrub((out + out2).strip()[:200])
         return True, "เปิดแอปแล้วแต่ลิงก์เกมไม่ทำงาน (ใช้ launcher แทน)"
-    if floating:
-        return True, "ส่งคำสั่งเปิดแบบหน้าต่างลอยแล้ว"
     return True, "ok"
 
 
@@ -400,9 +393,7 @@ def read_cookies():
                 l = line.strip()
                 if not l or l.startswith("#"):
                     continue
-                cookie = clean_cookie(l)
-                if cookie:
-                    res.append(cookie)
+                res.append(clean_cookie(l))
     except OSError:
         return []
     SECRETS.update(res)
@@ -548,8 +539,7 @@ class Hook:
         w = self.cfg.d["webhook"]
         if event != "test" and not (w["enabled"] and w["events"].get(event)):
             return True
-        if not HOOK_RE.fullmatch(str(w.get("url", ""))):
-            log.warning("Webhook URL ไม่ถูกต้อง")
+        if not w["url"]:
             return False
         embed = {"title": scrub(title), "description": scrub(desc), "color": EV_COLOR.get(event, 0),
                  "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": "GARNT TOOL REJOIN"},
@@ -585,6 +575,138 @@ class Hook:
         return False
 
 
+# ----------------------------------------------------------------- heartbeat (in-game script -> local receiver)
+LUA_TEMPLATE = r"""-- GARNT TOOL REJOIN heartbeat (auto-generated)
+-- ใช้กับบัญชีและเครื่องของตัวเองเท่านั้น ต้องรันผ่านเอ็กซิคิวเตอร์ที่รองรับ HTTP
+local HOST     = "http://127.0.0.1:__PORT__"
+local ID       = "__ID__"       -- ชื่อแพ็กเกจหรือเลขอินสแตนซ์ ต้องตรงกับในเครื่องมือ
+local INTERVAL = __INTERVAL__   -- ส่งทุกกี่วินาที
+
+if getgenv then
+    if getgenv().__GARNT_HB then return end
+    getgenv().__GARNT_HB = true
+end
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local GuiService = game:GetService("GuiService")
+
+local lp = Players.LocalPlayer
+while not lp do task.wait(1); lp = Players.LocalPlayer end
+
+local lastFrame = os.clock()
+RunService.Heartbeat:Connect(function() lastFrame = os.clock() end)
+
+local function httpGet(url)
+    local req = (syn and syn.request) or http_request or request or (http and http.request)
+    if req then
+        local ok = pcall(req, { Url = url, Method = "GET" })
+        if ok then return true end
+    end
+    return (pcall(function() return game:HttpGet(url) end))
+end
+
+local function hasErrorPrompt()
+    local ok, msg = pcall(function() return GuiService:GetErrorMessage() end)
+    return ok and type(msg) == "string" and msg ~= ""
+end
+
+local function beat()
+    if os.clock() - lastFrame > 5 then return end   -- เกมค้าง: ไม่ส่ง
+    if hasErrorPrompt() then return end              -- ขึ้นหน้าต่าง Disconnected: ไม่ส่ง
+    local url = string.format("%s/hb?id=%s&user=%s&uid=%d&place=%d&job=%s", HOST,
+        HttpService:UrlEncode(ID), HttpService:UrlEncode(lp.Name), lp.UserId, game.PlaceId,
+        HttpService:UrlEncode(game.JobId))
+    httpGet(url)
+end
+
+task.spawn(function()
+    while true do
+        pcall(beat)
+        task.wait(INTERVAL)
+    end
+end)
+"""
+
+
+def render_lua(inst_id, port, interval):
+    return (LUA_TEMPLATE.replace("__PORT__", str(int(port))).replace("__INTERVAL__", str(int(interval)))
+            .replace("__ID__", re.sub(r"[^\w.\-]", "", str(inst_id))))
+
+
+def write_heartbeat_files(cfg):
+    h = cfg.d["heartbeat"]
+    d = os.path.join(BASE, "heartbeat")
+    os.makedirs(d, exist_ok=True)
+    det = cfg.d["detected"] or ["1"]
+    paths = []
+    for i, pkg in enumerate(det, 1):
+        p = os.path.join(d, "heartbeat_%d_%s.lua" % (i, pkg.split(".")[-1]))
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(render_lua(pkg, h["port"], h["interval"]))
+        paths.append(p)
+    return paths
+
+
+class Heartbeats:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.d = {}
+
+    def put(self, q):
+        key = re.sub(r"[^\w.\-]", "", q.get("id", ""))[:64]
+        if not key:
+            return False
+        rec = {"ts": time.time(), "user": re.sub(r"[^\w .\-]", "", q.get("user", ""))[:30],
+               "uid": q.get("uid", "")[:20], "place": q.get("place", "")[:20], "job": q.get("job", "")[:64]}
+        with self.lock:
+            self.d[key] = rec
+        return True
+
+    def latest(self, inst):
+        with self.lock:
+            recs = [self.d[k] for k in (inst.pkg, str(inst.idx)) if k in self.d]
+        return max(recs, key=lambda r: r["ts"]) if recs else None
+
+
+class HBServer:
+    """Tiny local-only HTTP receiver: GET /hb?id=..&user=..&uid=..&place=..&job=.. and GET /ping."""
+
+    def __init__(self, store, port):
+        self.store, self.port, self.httpd = store, int(port), None
+
+    def start(self):
+        store = self.store
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                u = urlparse(self.path)
+                code, body = 404, b"not found"
+                if u.path == "/ping":
+                    code, body = 200, b"pong"
+                elif u.path == "/hb":
+                    q = {k: v[0][:80] for k, v in parse_qs(u.query).items() if v}
+                    code, body = (200, b"ok") if store.put(q) else (400, b"missing id")
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", self.port), H)
+        self.httpd.daemon_threads = True
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def stop(self):
+        if self.httpd:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+
+
 # ----------------------------------------------------------------- engine
 class Inst:
     def __init__(self, idx, pkg, cookie=None):
@@ -603,6 +725,7 @@ class Inst:
 
 
 REASON = {"dead": "แอปปิด/ค้าง (ไม่พบโปรเซส)", "background": "แอปไม่ได้อยู่หน้าจอ",
+          "noheartbeat": "ไม่มี heartbeat จากสคริปต์ในเกม",
           "notingame": "ไม่ได้อยู่ในเกม", "timed": "รีจอยตามเวลาที่ตั้งไว้"}
 STATE_TH = {"queued": ("รอคิวเปิด", "dim"), "launching": ("กำลังเปิดแอป", "cyan"),
             "joining": ("กำลังเข้าเกม", "yellow"), "ok": ("ปกติ", "bold green"),
@@ -616,14 +739,13 @@ def fmt_dur(sec):
 
 
 class Engine:
-    def __init__(self, cfg, hook, uri, instances):
-        self.cfg, self.hook, self.uri, self.insts = cfg, hook, uri, instances
+    def __init__(self, cfg, hook, uri, instances, hb=None):
+        self.cfg, self.hook, self.uri, self.insts, self.hb = cfg, hook, uri, instances, hb
         self.stop = threading.Event()
         self.gate = threading.Lock()
         self.last_launch = 0.0
         self.events = deque(maxlen=10)
         self.threads = []
-        self.launch_thread = None
         self.t0 = time.time()
 
     # -- helpers
@@ -640,24 +762,13 @@ class Engine:
         self.hook.send("start", "▶️ เริ่มรีจอยอัตโนมัติ", "เริ่มจัดการ %d อินสแตนซ์" % len(self.insts),
                        [("โหมด", "ROOT" if ENV.root else "ไม่รูท"), ("ตรวจทุก", "%ds" % self.interval()),
                         ("แพ็กเกจ", ", ".join(i.pkg for i in self.insts))])
-        self.launch_thread = threading.Thread(target=self._launch_sequence, daemon=True)
-        self.launch_thread.start()
-
-    def _launch_sequence(self):
-        """Launch selected packages in order; keep each one monitored while the next starts."""
         for inst in self.insts:
-            if self.stop.is_set() or not self._launch(inst, "start"):
-                break
-            if self.stop.is_set():
-                break
             t = threading.Thread(target=self._worker, args=(inst,), daemon=True)
             t.start()
             self.threads.append(t)
 
     def shutdown(self):
         self.stop.set()
-        if self.launch_thread:
-            self.launch_thread.join(timeout=5)
         for t in self.threads:
             t.join(timeout=5)
         wake_lock(False)
@@ -669,6 +780,8 @@ class Engine:
     # -- worker
     def _worker(self, inst):
         try:
+            if not self._launch(inst, "start"):
+                return
             while True:
                 inst.next_at = time.time() + self.interval()
                 if self.stop.wait(self.interval()):
@@ -691,15 +804,15 @@ class Engine:
             if self.stop.is_set():
                 return False
             inst.state, inst.detail = "launching", ""
-            ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"], c["auto"]["floating_window"])
+            ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"])
             self.last_launch = time.time()
         inst.launched_at = time.time()
-        inst.state, inst.detail = "joining", "รอเข้าเกม" if msg == "ok" else msg
+        inst.state, inst.detail = "joining", "รอเข้าเกม"
         if not ok:
             self.event("%s: เปิดเกมไม่สำเร็จ: %s" % (inst.label, msg), "red")
             return True
         if kind == "start":
-            self.event("%s: %s" % (inst.label, "เปิดเกมแล้ว" if msg == "ok" else msg), "green")
+            self.event("%s: เปิดเกมแล้ว" % inst.label, "green")
         else:
             inst.rejoins += 1
             self.event("%s: รีจอยแล้ว (ครั้งที่ %d)" % (inst.label, inst.rejoins), "cyan")
@@ -722,6 +835,24 @@ class Engine:
             inst.uid, inst.user = uid, name
         return in_game(inst.session, inst.uid)
 
+    def hb_state(self, inst):
+        """None = no usable heartbeat info (never seen / disabled); else ("ok"|"stale", detail)."""
+        hc = self.cfg.d["heartbeat"]
+        if not (hc["enabled"] and self.hb):
+            return None
+        rec = self.hb.latest(inst)
+        if rec is None:
+            return None  # script never reported: fall back to other signals
+        if rec["ts"] < inst.launched_at:
+            return "stale", "ยังไม่มี heartbeat หลังเปิดเกมใหม่"
+        age = time.time() - rec["ts"]
+        if rec["user"] and not inst.user:
+            inst.user = rec["user"]
+        who = (" [%s]" % rec["user"]) if rec["user"] else ""
+        if age <= int(hc["timeout"]):
+            return "ok", "heartbeat %ds ก่อน%s" % (age, who)
+        return "stale", "ไม่มี heartbeat มา %ds%s" % (age, who)
+
     def check(self, inst):
         alive = proc_alive(inst.pkg)
         if ENV.root and not alive:
@@ -729,6 +860,9 @@ class Engine:
         if ENV.root and alive and self.cfg.d["auto"]["foreground_check"]:
             if (inst.pkg + "/") not in foreground_text():
                 return "background", REASON["background"]
+        hs = self.hb_state(inst)
+        if hs:
+            return ("ok", hs[1]) if hs[0] == "ok" else ("noheartbeat", hs[1])
         pres = self.presence(inst)
         who = (" [%s]" % inst.user) if inst.user else ""
         if pres is True:
@@ -767,9 +901,7 @@ class Engine:
         delay = 0
         if reason != "timed":
             inst.fails += 1
-            base = min(3600, max(1, int(c["backoff_base"])))
-            maximum = min(86400, max(base, int(c["backoff_max"])))
-            delay = min(maximum, base * (1 << min(inst.fails - 1, 17)))
+            delay = min(int(c["backoff_max"]), int(c["backoff_base"]) * 2 ** (inst.fails - 1))
             self.event("%s: %s (ครั้งที่ %d) รีจอยใน %ds" % (inst.label, REASON[reason], inst.fails, delay), "red")
             shot = take_shot(inst.pkg) if c["auto"]["screenshot_on_crash"] else None
             self.hook.send("crash", "⚠️ หลุด/ค้าง", inst.label,
@@ -836,7 +968,7 @@ def onoff(v):
 
 
 def banner(cfg):
-    console.clear(home=True)
+    console.clear()
     console.print(Text(LOGO.strip("\n"), style="bold cyan"), highlight=False)
     console.print(Text("      T O O L   R E J O I N   •   ควายเผือก rejoin   •   v" + VERSION, style="bold magenta"))
     link = bool(cfg.d["game_link"])
@@ -882,11 +1014,22 @@ def menu_start(cfg, hook):
         else:
             say("ข้ามการล็อกอินด้วยคุกกี้: ต้องใช้รูท", "yellow")
     cmap = dict(cookie_pairs(cfg)[0])
-    insts = [Inst(i + 1, p, cmap.get(p)) for i, p in enumerate(pkgs)]
+    det = cfg.d["detected"]
+    insts = [Inst(det.index(p) + 1, p, cmap.get(p)) for p in pkgs]
+    hb = hbs = None
+    hc = cfg.d["heartbeat"]
+    if hc["enabled"]:
+        hb = Heartbeats()
+        hbs = HBServer(hb, hc["port"])
+        try:
+            hbs.start()
+            say("รับ heartbeat ที่ 127.0.0.1:%d (ทดสอบ: curl http://127.0.0.1:%d/ping)" % (hbs.port, hbs.port), "green")
+        except OSError as e:
+            say("เปิดพอร์ต heartbeat ไม่ได้ (%s) ข้ามการใช้ heartbeat" % e, "red")
+            hb = hbs = None
     if cfg.d["auto"]["wake_lock"]:
         wake_lock(True)
-    eng = Engine(cfg, hook, parsed[0], insts)
-    console.clear(home=True)
+    eng = Engine(cfg, hook, parsed[0], insts, hb)
     eng.start()
     try:
         with Live(get_renderable=eng.render, console=console, refresh_per_second=2):
@@ -896,6 +1039,8 @@ def menu_start(cfg, hook):
         pass
     say("\nกำลังหยุด...", "yellow")
     eng.shutdown()
+    if hbs:
+        hbs.stop()
     say("หยุดการทำงานแล้ว", "green")
     pause()
 
@@ -1028,7 +1173,6 @@ AUTO_ITEMS = [
     ("start_on_launch", "เริ่มรีจอยทันทีเมื่อเปิดเครื่องมือ", False),
     ("wake_lock", "เปิด Wake-lock ขณะรัน", False),
     ("force_stop", "Force-stop ก่อนเปิดเกมใหม่", True),
-    ("floating_window", "บังคับเปิด Roblox เป็นหน้าต่างลอย", False),
     ("foreground_check", "ตรวจว่าแอปอยู่หน้าจอ", True),
     ("screenshot_on_crash", "แคปหน้าจอเมื่อหลุด/ค้าง", True),
     ("cookie_login_on_start", "ล็อกอินด้วยคุกกี้อัตโนมัติก่อนเริ่ม", True),
@@ -1048,6 +1192,7 @@ def menu_auto(cfg):
         n = len(AUTO_ITEMS)
         t.add_row(str(n + 1), "รีจอยตามเวลา (นาที, 0=ปิด)", str(a["timed_rejoin_min"]), "")
         t.add_row(str(n + 2), "เวลารอเข้าเกมหลังเปิดแอป (วินาที)", str(cfg.d["join_grace"]), "")
+        t.add_row(str(n + 3), "Heartbeat (สคริปต์ในเกม) ...", onoff(cfg.d["heartbeat"]["enabled"]), "เมนูย่อย")
         console.print(t)
         c = ask("เลือกหมายเลขเพื่อสลับ/แก้ไข (0=กลับ)")
         if c == "0":
@@ -1056,6 +1201,8 @@ def menu_auto(cfg):
             k = AUTO_ITEMS[int(c) - 1][0]
             a[k] = not a[k]
             cfg.save()
+        elif c == str(n + 3):
+            menu_heartbeat(cfg)
         elif c in (str(n + 1), str(n + 2)):
             v = ask("ค่าใหม่ (ตัวเลข):")
             if v.isdigit():
@@ -1064,6 +1211,40 @@ def menu_auto(cfg):
                 else:
                     cfg.d["join_grace"] = max(30, int(v))
                 cfg.save()
+
+
+def menu_heartbeat(cfg):
+    h = cfg.d["heartbeat"]
+    while True:
+        banner(cfg)
+        t = Table(title="Heartbeat (สคริปต์ในเกม ส่งสัญญาณมาที่เครื่องมือ)", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
+            t.add_column(col)
+        t.add_row("1", "เปิดใช้ heartbeat (เปิดเมื่อติดตั้งสคริปต์ในทุกโคลนแล้ว)", onoff(h["enabled"]))
+        t.add_row("2", "พอร์ตรับสัญญาณ (127.0.0.1)", str(h["port"]))
+        t.add_row("3", "สคริปต์ส่งทุก (วินาที)", str(h["interval"]))
+        t.add_row("4", "ถือว่าหยุดส่งเมื่อเงียบเกิน (วินาที)", str(h["timeout"]))
+        t.add_row("5", "สร้างไฟล์สคริปต์ .lua ให้แต่ละอินสแตนซ์", "")
+        console.print(t)
+        c = ask("เลือกหมายเลข (0=กลับ)")
+        if c == "0":
+            return
+        if c == "1":
+            h["enabled"] = not h["enabled"]
+        elif c in ("2", "3", "4"):
+            key, lo, hi = {"2": ("port", 1024, 65535), "3": ("interval", 5, 120), "4": ("timeout", 30, 600)}[c]
+            v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
+            if v.isdigit() and lo <= int(v) <= hi:
+                h[key] = int(v)
+            elif v:
+                say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
+                pause()
+        elif c == "5":
+            for p in write_heartbeat_files(cfg):
+                say("สร้างแล้ว: " + p, "green")
+            say("คัดลอกไฟล์ของแต่ละโคลนไปไว้ในโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ในโคลนนั้น (หรือรันตอนเข้าเกม)", "dim")
+            pause()
+        cfg.save()
 
 
 def menu_webhook(cfg, hook):
