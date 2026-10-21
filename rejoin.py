@@ -38,7 +38,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.1"
+VERSION = "1.2"
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
   ____    _    ____  _   _ _____
@@ -150,11 +150,14 @@ DEFAULTS = {
         "timed_rejoin_min": 0,
     },
     "heartbeat": {"enabled": False, "port": 8765, "interval": 15, "timeout": 90},
+    "performance": {"low_cpu": True, "ui_refresh_sec": 2},
+    "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False},
     "webhook": {
         "url": "",
         "enabled": False,
         "send_screenshot": True,
-        "events": {"start": True, "crash": True, "rejoin": True, "stop": True},
+        "periodic_min": 10,   # status report + screenshot every N minutes (0 = off)
+        "events": {"start": True, "crash": True, "rejoin": True, "stop": True, "status": True},
     },
 }
 
@@ -247,29 +250,93 @@ def detect_root():
 
 
 _cache = {}
+_clock = threading.RLock()
 
 
 def cached(key, ttl, fn):
-    v = _cache.get(key)
-    if v and time.time() - v[0] < ttl:
-        return v[1]
-    r = fn()
-    _cache[key] = (time.time(), r)
-    return r
+    """TTL cache; the lock makes simultaneous callers share a single (expensive) call."""
+    with _clock:
+        v = _cache.get(key)
+        if v and time.time() - v[0] < ttl:
+            return v[1]
+        r = fn()
+        _cache[key] = (time.time(), r)
+        return r
+
+
+FG_CMD = "(dumpsys activity activities; dumpsys window) 2>/dev/null | grep -E 'ResumedActivity|mCurrentFocus|mFocusedApp'"
+SNAP = {"fg": False, "ttl": 5}
+
+
+def snapshot():
+    """ONE shell call per check cycle: process names (+ foreground info when enabled)."""
+    def run():
+        cmd = "ps -A -o NAME 2>/dev/null"
+        if SNAP["fg"]:
+            cmd += "; echo '@@FG@@'; " + FG_CMD
+        _, out = sh(cmd, root=ENV.root, timeout=40)
+        names, _, fg = out.partition("@@FG@@")
+        procs = {l.strip() for l in names.splitlines() if l.strip()}
+        return {"procs": procs, "fg": fg, "ps_ok": len(procs) > 5}
+    return cached(("snap", SNAP["fg"]), SNAP["ttl"], run)
 
 
 def foreground_text():
-    return cached("fg", 5, lambda: sh(
-        "(dumpsys activity activities; dumpsys window) 2>/dev/null | "
-        "grep -E 'ResumedActivity|mCurrentFocus|mFocusedApp'", root=True, timeout=25)[1])
+    if SNAP["fg"]:
+        return snapshot()["fg"]
+    return cached("fg", 5, lambda: sh(FG_CMD, root=True, timeout=25)[1])
 
 
 def proc_alive(pkg):
+    snap = snapshot()
+    if pkg in snap["procs"]:
+        return True
+    if ENV.root and snap["ps_ok"]:
+        return False
     rc, out = sh("pidof " + shlex.quote(pkg), root=ENV.root, timeout=10)
     if rc == 127 or "not found" in out:
-        _, out = sh("ps -A 2>/dev/null | grep -w %s | grep -v grep" % shlex.quote(pkg), root=ENV.root, timeout=10)
-        return bool(out.strip())
+        return False
     return bool(re.search(r"\b\d+\b", out))
+
+
+def mem_available_mb():
+    try:
+        d = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                d[k] = int(v.split()[0])
+        kb = d.get("MemAvailable") or (d.get("MemFree", 0) + d.get("Cached", 0))
+        return int(kb / 1024)
+    except Exception:
+        return None
+
+
+def drop_ram(kill_cached=False):
+    """Root only. Drop page cache (and optionally kill cached background apps). -> (ok, before_mb, after_mb)"""
+    if not ENV.root:
+        return False, None, None
+    before = mem_available_mb()
+    cmd = "sync; echo 3 > /proc/sys/vm/drop_caches"
+    if kill_cached:
+        cmd += "; am kill-all"
+    rc, _ = sh(cmd, root=True, timeout=40)
+    time.sleep(1)
+    return rc == 0, before, mem_available_mb()
+
+
+_NICED = False
+
+
+def apply_perf(cfg):
+    """Lower this process priority so the game keeps the CPU (takes effect once per run)."""
+    global _NICED
+    if cfg.d["performance"]["low_cpu"] and not _NICED:
+        try:
+            os.nice(10)
+            _NICED = True
+        except (OSError, AttributeError):
+            pass
 
 
 def wake_lock(on):
@@ -528,7 +595,7 @@ def cookie_login(pairs):
 
 # ----------------------------------------------------------------- discord webhook
 HOOK_RE = re.compile(r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$")
-EV_COLOR = {"start": 0x2ECC71, "crash": 0xE74C3C, "rejoin": 0x3498DB, "stop": 0x95A5A6, "test": 0x9B59B6}
+EV_COLOR = {"status": 0xF1C40F, "start": 0x2ECC71, "crash": 0xE74C3C, "rejoin": 0x3498DB, "stop": 0x95A5A6, "test": 0x9B59B6}
 
 
 class Hook:
@@ -716,6 +783,7 @@ class Inst:
         self.uid = None
         self.user = ""
         self.cookie_bad = False
+        self.pres_at, self.pres_val = 0.0, None
         self.state, self.detail = "queued", ""
         self.fails = self.rejoins = 0
         self.launched_at = 0.0
@@ -739,6 +807,9 @@ def fmt_dur(sec):
 
 
 class Engine:
+    MIN = 60        # seconds per "minute" (overridable for tests)
+    HK_TICK = 30    # housekeeping resolution in seconds
+
     def __init__(self, cfg, hook, uri, instances, hb=None):
         self.cfg, self.hook, self.uri, self.insts, self.hb = cfg, hook, uri, instances, hb
         self.stop = threading.Event()
@@ -762,8 +833,9 @@ class Engine:
         self.hook.send("start", "▶️ เริ่มรีจอยอัตโนมัติ", "เริ่มจัดการ %d อินสแตนซ์" % len(self.insts),
                        [("โหมด", "ROOT" if ENV.root else "ไม่รูท"), ("ตรวจทุก", "%ds" % self.interval()),
                         ("แพ็กเกจ", ", ".join(i.pkg for i in self.insts))])
-        for inst in self.insts:
-            t = threading.Thread(target=self._worker, args=(inst,), daemon=True)
+        SNAP["fg"] = bool(ENV.root and self.cfg.d["auto"]["foreground_check"])
+        for target, args in [(self._worker, (i,)) for i in self.insts] + [(self._housekeeper, ())]:
+            t = threading.Thread(target=target, args=args, daemon=True)
             t.start()
             self.threads.append(t)
 
@@ -772,10 +844,57 @@ class Engine:
         for t in self.threads:
             t.join(timeout=5)
         wake_lock(False)
+        SNAP["fg"] = False
         up = fmt_dur(time.time() - self.t0)
         self.event("หยุดการทำงาน (รันมา %s)" % up)
         self.hook.send("stop", "⏹️ หยุดรีจอยอัตโนมัติ", "รันมาแล้ว " + up,
                        [(i.pkg, "รีจอย %d ครั้ง" % i.rejoins) for i in self.insts], sync=True)
+
+    def _next_tick(self):
+        """All instances are checked on the same time grid so one snapshot serves every instance."""
+        iv = self.interval()
+        return self.t0 + (int((time.time() - self.t0) // iv) + 1) * iv
+
+    # -- housekeeping: RAM clearing + periodic status report with screenshot
+    def _housekeeper(self):
+        c = self.cfg.d
+        last_ram = last_rep = time.time()
+        while not self.stop.wait(self.HK_TICK):
+            now = time.time()
+            r = c["ram"]
+            if r["enabled"] and ENV.root:
+                free = mem_available_mb()
+                due = r["interval_min"] > 0 and now - last_ram >= r["interval_min"] * self.MIN
+                low = bool(r["min_free_mb"] > 0 and free is not None and free < r["min_free_mb"] and now - last_ram >= self.MIN)
+                if due or low:
+                    self.clear_ram("แรมว่างต่ำ" if low else "ตามเวลา")
+                    last_ram = time.time()
+            pm = int(c["webhook"]["periodic_min"])
+            if pm > 0 and now - last_rep >= pm * self.MIN:
+                last_rep = now
+                try:
+                    self.report(pm)
+                except Exception as e:
+                    self.event("ส่งรายงานสถานะไม่สำเร็จ: %s" % e, "red")
+
+    def clear_ram(self, why):
+        ok, before, after = drop_ram(self.cfg.d["ram"]["kill_cached"])
+        if ok:
+            self.event("ล้างแรม (%s): ว่าง %s → %s MB" % (why, before, after), "cyan")
+        else:
+            self.event("ล้างแรมไม่สำเร็จ", "red")
+
+    def report(self, minutes):
+        w = self.cfg.d["webhook"]
+        if not (w["enabled"] and w["url"] and w["events"].get("status")):
+            return
+        shot = take_shot("status") if (ENV.root and w["send_screenshot"]) else None
+        mem = mem_available_mb()
+        fields = [(i.label, "%s | รีจอย %d | ล้มเหลว %d%s" % (STATE_TH.get(i.state, (i.state,))[0], i.rejoins, i.fails,
+                                                              (" | " + i.user) if i.user else "")) for i in self.insts][:22]
+        fields.append(("RAM ว่าง", ("%d MB" % mem) if mem is not None else "-"))
+        fields.append(("รันมาแล้ว", fmt_dur(time.time() - self.t0)))
+        self.hook.send("status", "📸 รายงานสถานะ", "รายงานประจำทุก %d นาที" % minutes, fields, shot)
 
     # -- worker
     def _worker(self, inst):
@@ -783,8 +902,8 @@ class Engine:
             if not self._launch(inst, "start"):
                 return
             while True:
-                inst.next_at = time.time() + self.interval()
-                if self.stop.wait(self.interval()):
+                inst.next_at = self._next_tick()
+                if self.stop.wait(max(0.1, inst.next_at - time.time())):
                     break
                 try:
                     self._tick(inst)
@@ -807,6 +926,7 @@ class Engine:
             ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"])
             self.last_launch = time.time()
         inst.launched_at = time.time()
+        inst.pres_at = 0.0
         inst.state, inst.detail = "joining", "รอเข้าเกม"
         if not ok:
             self.event("%s: เปิดเกมไม่สำเร็จ: %s" % (inst.label, msg), "red")
@@ -833,7 +953,11 @@ class Engine:
                     self.event("%s: %s" % (inst.label, err), "red")
                 return None
             inst.uid, inst.user = uid, name
-        return in_game(inst.session, inst.uid)
+        ttl = 60 if self.cfg.d["performance"]["low_cpu"] else 0
+        if ttl and time.time() - inst.pres_at < ttl - 1:
+            return inst.pres_val
+        inst.pres_val, inst.pres_at = in_game(inst.session, inst.uid), time.time()
+        return inst.pres_val
 
     def hb_state(self, inst):
         """None = no usable heartbeat info (never seen / disabled); else ("ok"|"stale", detail)."""
@@ -918,10 +1042,13 @@ class Engine:
     # -- live panel
     def render(self):
         now = time.time()
+        mem = mem_available_mb()
         head = Text.assemble(
             ("โหมด: ", "dim"), ("ROOT" if ENV.root else "ไม่รูท", "bold green" if ENV.root else "bold yellow"),
             ("  |  ตรวจทุก %ds" % self.interval(), ""), ("  |  หน่วงเปิด %ss" % self.cfg.d["launch_delay"], ""),
-            ("  |  รันมา " + fmt_dur(now - self.t0), "bold"), ("\nกด Ctrl+C เพื่อหยุดและกลับเมนู", "dim"))
+            ("  |  รันมา " + fmt_dur(now - self.t0), "bold"),
+            (("  |  RAM ว่าง %d MB" % mem) if mem is not None else "", ""),
+            ("\nกด Ctrl+C เพื่อหยุดและกลับเมนู", "dim"))
         t = Table(box=box.SIMPLE_HEAVY, expand=True, header_style="bold cyan")
         for col in ("#", "แพ็กเกจ", "บัญชี", "สถานะ", "ล้มเหลว", "รีจอย", "ถัดไป", "รายละเอียด"):
             t.add_column(col, overflow="fold")
@@ -1029,12 +1156,15 @@ def menu_start(cfg, hook):
             hb = hbs = None
     if cfg.d["auto"]["wake_lock"]:
         wake_lock(True)
+    apply_perf(cfg)
+    pf = cfg.d["performance"]
+    rate = 1.0 / max(1, int(pf["ui_refresh_sec"])) if pf["low_cpu"] else 2
     eng = Engine(cfg, hook, parsed[0], insts, hb)
     eng.start()
     try:
-        with Live(get_renderable=eng.render, console=console, refresh_per_second=2):
+        with Live(get_renderable=eng.render, console=console, refresh_per_second=rate):
             while True:
-                time.sleep(0.5)
+                time.sleep(1)
     except KeyboardInterrupt:
         pass
     say("\nกำลังหยุด...", "yellow")
@@ -1193,6 +1323,7 @@ def menu_auto(cfg):
         t.add_row(str(n + 1), "รีจอยตามเวลา (นาที, 0=ปิด)", str(a["timed_rejoin_min"]), "")
         t.add_row(str(n + 2), "เวลารอเข้าเกมหลังเปิดแอป (วินาที)", str(cfg.d["join_grace"]), "")
         t.add_row(str(n + 3), "Heartbeat (สคริปต์ในเกม) ...", onoff(cfg.d["heartbeat"]["enabled"]), "เมนูย่อย")
+        t.add_row(str(n + 4), "ประสิทธิภาพ: ล้างแรม / ลดการใช้ CPU ...", "", "เมนูย่อย")
         console.print(t)
         c = ask("เลือกหมายเลขเพื่อสลับ/แก้ไข (0=กลับ)")
         if c == "0":
@@ -1203,6 +1334,8 @@ def menu_auto(cfg):
             cfg.save()
         elif c == str(n + 3):
             menu_heartbeat(cfg)
+        elif c == str(n + 4):
+            menu_perf(cfg)
         elif c in (str(n + 1), str(n + 2)):
             v = ask("ค่าใหม่ (ตัวเลข):")
             if v.isdigit():
@@ -1247,9 +1380,54 @@ def menu_heartbeat(cfg):
         cfg.save()
 
 
+def menu_perf(cfg):
+    r, p = cfg.d["ram"], cfg.d["performance"]
+    while True:
+        banner(cfg)
+        t = Table(title="ประสิทธิภาพ: ล้างแรม / ลดการใช้ CPU", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
+            t.add_column(col)
+        t.add_row("1", "ล้างแรมอัตโนมัติ (เฉพาะรูท)", onoff(r["enabled"]))
+        t.add_row("2", "ล้างแรมทุก (นาที, 0=ไม่ล้างตามเวลา)", str(r["interval_min"]))
+        t.add_row("3", "ล้างเมื่อแรมว่างต่ำกว่า (MB, 0=ปิด)", str(r["min_free_mb"]))
+        t.add_row("4", "ปิดแอปพื้นหลังที่ cached ด้วย (am kill-all) ⚠ อาจปิดโคลนที่อยู่เบื้องหลัง", onoff(r["kill_cached"]))
+        t.add_row("5", "โหมดประหยัด CPU (ลดความสำคัญโปรเซส, เก็บสถานะเกมไว้ 60 วินาที, รีเฟรชจอช้าลง)", onoff(p["low_cpu"]))
+        t.add_row("6", "รีเฟรชแผงสถานะทุก (วินาที, ใช้เมื่อเปิดโหมดประหยัด CPU)", str(p["ui_refresh_sec"]))
+        t.add_row("7", "ล้างแรมเดี๋ยวนี้", "")
+        console.print(t)
+        free = mem_available_mb()
+        say("RAM ว่างตอนนี้: %s MB%s" % (free if free is not None else "?", "" if ENV.root else "  (โหมดไม่รูทล้างแรมไม่ได้)"), "dim")
+        c = ask("เลือกหมายเลข (0=กลับ)")
+        if c == "0":
+            return
+        if c == "1":
+            r["enabled"] = not r["enabled"]
+        elif c == "4":
+            r["kill_cached"] = not r["kill_cached"]
+        elif c == "5":
+            p["low_cpu"] = not p["low_cpu"]
+        elif c in ("2", "3", "6"):
+            sec, key, lo, hi = {"2": (r, "interval_min", 0, 1440), "3": (r, "min_free_mb", 0, 8192),
+                                "6": (p, "ui_refresh_sec", 1, 10)}[c]
+            v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
+            if v.isdigit() and lo <= int(v) <= hi:
+                sec[key] = int(v)
+            elif v:
+                say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
+                pause()
+        elif c == "7":
+            ok, b4, af = drop_ram(r["kill_cached"])
+            say(("ล้างแรมแล้ว: ว่าง %s → %s MB" % (b4, af)) if ok else "ล้างแรมไม่สำเร็จ (ต้องใช้รูท)", "green" if ok else "red")
+            pause()
+        cfg.save()
+
+
 def menu_webhook(cfg, hook):
     w = cfg.d["webhook"]
-    names = [("start", "เริ่มทำงาน"), ("crash", "หลุด/ค้าง"), ("rejoin", "รีจอยแล้ว"), ("stop", "หยุดทำงาน")]
+    names = [("start", "เริ่มทำงาน"), ("crash", "หลุด/ค้าง"), ("rejoin", "รีจอยแล้ว"), ("stop", "หยุดทำงาน"),
+             ("status", "รายงานสถานะ+ภาพหน้าจอเป็นรอบ")]
+    n_shot = 3 + len(names)
+    n_per, n_test = n_shot + 1, n_shot + 2
     while True:
         banner(cfg)
         t = Table(title="Discord Webhook", box=box.ROUNDED, header_style="bold cyan")
@@ -1259,8 +1437,9 @@ def menu_webhook(cfg, hook):
         t.add_row("2", "เปิดใช้งาน Webhook", onoff(w["enabled"]))
         for i, (k, label) in enumerate(names, 3):
             t.add_row(str(i), "แจ้งเตือน: " + label, onoff(w["events"][k]))
-        t.add_row("7", "แนบภาพหน้าจอ (รูทเท่านั้น, เก็บล่าสุด %d รูป)" % MAX_SHOTS, onoff(w["send_screenshot"]))
-        t.add_row("8", "ส่งข้อความทดสอบ", "")
+        t.add_row(str(n_shot), "แนบภาพหน้าจอ (รูทเท่านั้น, เก็บล่าสุด %d รูป)" % MAX_SHOTS, onoff(w["send_screenshot"]))
+        t.add_row(str(n_per), "ส่งรายงานสถานะ+ภาพหน้าจอทุกกี่นาที (0=ปิด)", str(w["periodic_min"]))
+        t.add_row(str(n_test), "ส่งข้อความทดสอบ", "")
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
@@ -1276,12 +1455,19 @@ def menu_webhook(cfg, hook):
                 pause()
         elif c == "2":
             w["enabled"] = not w["enabled"]
-        elif c in ("3", "4", "5", "6"):
+        elif c.isdigit() and 3 <= int(c) < n_shot:
             k = names[int(c) - 3][0]
             w["events"][k] = not w["events"][k]
-        elif c == "7":
+        elif c == str(n_shot):
             w["send_screenshot"] = not w["send_screenshot"]
-        elif c == "8":
+        elif c == str(n_per):
+            v = ask("ทุกกี่นาที (0-1440):")
+            if v.isdigit() and 0 <= int(v) <= 1440:
+                w["periodic_min"] = int(v)
+            elif v:
+                say("ต้องเป็นตัวเลข 0-1440", "red")
+                pause()
+        elif c == str(n_test):
             ok = hook.send("test", "✅ ทดสอบ Webhook", "เชื่อมต่อสำเร็จ", [("โหมด", "ROOT" if ENV.root else "ไม่รูท")], sync=True)
             say("ส่งสำเร็จ" if ok else "ส่งไม่สำเร็จ ตรวจสอบ URL", "green" if ok else "red")
             pause()
@@ -1298,6 +1484,7 @@ def main():
     cfg = Config()
     setup_logging()
     hook = Hook(cfg)
+    apply_perf(cfg)
     log.info("เริ่มโปรแกรม โหมด=%s โฟลเดอร์=%s", "root" if ENV.root else "non-root", BASE)
     if not STORAGE_OK:
         say("เขียน /sdcard/Download ไม่ได้ (ยังไม่อนุญาตที่เก็บข้อมูล?) ใช้โฟลเดอร์สำรอง: " + BASE, "yellow")
