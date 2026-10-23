@@ -46,7 +46,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.4"
+VERSION = "1.5"
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
   ____    _    ____  _   _ _____
@@ -157,7 +157,9 @@ DEFAULTS = {
         "presence_check": True,
         "timed_rejoin_min": 0,
     },
-    "heartbeat": {"enabled": False, "port": 8765, "interval": 15, "timeout": 90},
+    "heartbeat": {"enabled": True, "port": 8765, "interval": 15, "timeout": 90},
+    "autoexec": {"auto_create": True, "enabled_once": False, "filename": "heartbeat.lua",
+                 "dirs": ["/storage/emulated/0/Delta/Autoexecute"]},   # {pkg} in a path = one folder per clone
     "performance": {"low_cpu": True, "ui_refresh_sec": 2},
     "console_webhook": {"enabled": False, "url": "", "flush_sec": 10},   # blank url = reuse the main webhook
     "dialog_detect": {"enabled": True, "every_sec": 30, "confirm": 2},
@@ -908,13 +910,95 @@ def write_heartbeat_files(cfg):
     return paths
 
 
+HB_MARK = "-- GARNT TOOL REJOIN heartbeat"
+
+
+def peer_uid(client_port, server_port):
+    """Root can read /proc/net/tcp: find which Android UID owns the loopback connection that is calling us."""
+    for f in ("/proc/net/tcp6", "/proc/net/tcp"):
+        try:
+            with open(f) as fh:
+                next(fh, None)
+                for line in fh:
+                    p = line.split()
+                    if len(p) > 7 and int(p[1].rsplit(":", 1)[1], 16) == client_port \
+                            and int(p[2].rsplit(":", 1)[1], 16) == server_port:
+                        return int(p[7])
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def uid_packages():
+    def run():
+        _, out = sh("pm list packages -U", root=ENV.root, timeout=40)
+        d = {}
+        for l in out.splitlines():
+            m = re.match(r"package:([\w.]+)\s+uid:(\d+)", l.strip())
+            if m:
+                d[int(m.group(2))] = m.group(1)
+        return d
+    return cached("uidmap", 600, run)
+
+
+def autoexec_targets(cfg):
+    out = []
+    for d in cfg.d["autoexec"]["dirs"]:
+        if "{pkg}" in d:
+            out += [(d.replace("{pkg}", p), p) for p in cfg.d["detected"]]
+        else:
+            out.append((d, "auto"))   # shared folder: one script for every clone (id found from the caller's UID)
+    return out
+
+
+def install_autoexec(cfg):
+    """Create/refresh heartbeat.lua in the executor's autoexec folder(s). -> [(path, created|updated|ok|skipped|error)]"""
+    a, h = cfg.d["autoexec"], cfg.d["heartbeat"]
+    res = []
+    for d, ident in autoexec_targets(cfg):
+        path = os.path.join(d, a["filename"])
+        src = render_lua(ident, h["port"], h["interval"])
+        try:
+            old = None
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    old = f.read()
+                if not old.startswith(HB_MARK):
+                    res.append((path, "skipped"))      # someone else's file: never overwrite
+                    continue
+                if old == src:
+                    res.append((path, "ok"))
+                    continue
+            os.makedirs(d, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(src)
+            res.append((path, "created" if old is None else "updated"))
+        except OSError as e:
+            res.append((path, "error: %s" % e))
+    return res
+
+
+def report_autoexec(cfg, results, quiet_ok=True):
+    names = {"created": "สร้างแล้ว", "updated": "อัปเดตแล้ว", "ok": "พร้อมใช้งาน",
+             "skipped": "ข้าม (มีไฟล์ชื่อเดียวกันที่ไม่ใช่ของเครื่องมือ)"}
+    for path, st in results:
+        if st == "ok" and quiet_ok:
+            continue
+        say("heartbeat.lua: %s → %s" % (names.get(st, st), path), "red" if st.startswith("error") else "green" if st != "skipped" else "yellow")
+    if any(st == "created" for _, st in results) and not cfg.d["autoexec"]["enabled_once"]:
+        cfg.d["autoexec"]["enabled_once"] = True
+        cfg.d["heartbeat"]["enabled"] = True       # first install only: turn heartbeat on (later changes are yours)
+        cfg.save()
+        say("เปิดใช้ heartbeat ให้แล้ว (ปิดได้ที่ เมนู 6 > Heartbeat > 1)", "cyan")
+
+
 class Heartbeats:
     def __init__(self):
         self.lock = threading.Lock()
-        self.d = {}
+        self.d, self.by_user, self.single = {}, {}, False
 
-    def put(self, q):
-        key = re.sub(r"[^\w.\-]", "", q.get("id", ""))[:64]
+    def put(self, q, peer_pkg=None):
+        key = peer_pkg or re.sub(r"[^\w.\-]", "", q.get("id", ""))[:64]
         if not key:
             return False
         rec = {"ts": time.time(), "user": re.sub(r"[^\w .\-]", "", q.get("user", ""))[:30],
@@ -922,22 +1006,28 @@ class Heartbeats:
                "err": re.sub(r"[^\w .:()\-]", "", q.get("err", ""))[:120]}
         with self.lock:
             self.d[key] = rec
+            if rec["user"]:
+                self.by_user[rec["user"]] = rec
         return True
 
     def latest(self, inst):
         with self.lock:
             recs = [self.d[k] for k in (inst.pkg, str(inst.idx)) if k in self.d]
+            if inst.user and inst.user in self.by_user:
+                recs.append(self.by_user[inst.user])
+            if self.single and "auto" in self.d:
+                recs.append(self.d["auto"])
         return max(recs, key=lambda r: r["ts"]) if recs else None
 
 
 class HBServer:
     """Tiny local-only HTTP receiver: GET /hb?id=..&user=..&uid=..&place=..&job=.. and GET /ping."""
 
-    def __init__(self, store, port):
-        self.store, self.port, self.httpd = store, int(port), None
+    def __init__(self, store, port, prefix="com.roblox."):
+        self.store, self.port, self.httpd, self.prefix = store, int(port), None, prefix
 
     def start(self):
-        store = self.store
+        store, prefix = self.store, self.prefix
 
         class H(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -947,7 +1037,13 @@ class HBServer:
                     code, body = 200, b"pong"
                 elif u.path == "/hb":
                     q = {k: v[0][:80] for k, v in parse_qs(u.query).items() if v}
-                    code, body = (200, b"ok") if store.put(q) else (400, b"missing id")
+                    pkg = None
+                    uid = peer_uid(self.client_address[1], self.server.server_address[1])
+                    if uid is not None:
+                        pkg = uid_packages().get(uid)
+                        if pkg and not pkg.startswith(prefix):
+                            pkg = None
+                    code, body = (200, b"ok") if store.put(q, pkg) else (400, b"missing id")
                 self.send_response(code)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -1646,6 +1742,8 @@ def menu_start(cfg, hook):
                 say("%s: %s" % (pkg, msg), "green" if ok else "red")
         else:
             say("ข้ามการล็อกอินด้วยคุกกี้: ต้องใช้รูท", "yellow")
+    if cfg.d["autoexec"]["auto_create"]:
+        report_autoexec(cfg, install_autoexec(cfg))
     cmap = dict(cookie_pairs(cfg)[0])
     det = cfg.d["detected"]
     insts = [Inst(det.index(p) + 1, p, cmap.get(p)) for p in pkgs]
@@ -1653,7 +1751,8 @@ def menu_start(cfg, hook):
     hc = cfg.d["heartbeat"]
     if hc["enabled"]:
         hb = Heartbeats()
-        hbs = HBServer(hb, hc["port"])
+        hbs = HBServer(hb, hc["port"], cfg.d["package_prefix"])
+        hb.single = len(insts) == 1
         try:
             hbs.start()
             say("รับ heartbeat ที่ 127.0.0.1:%d (ทดสอบ: curl http://127.0.0.1:%d/ping)" % (hbs.port, hbs.port), "green")
@@ -1877,7 +1976,10 @@ def menu_heartbeat(cfg):
         t.add_row("2", "พอร์ตรับสัญญาณ (127.0.0.1)", str(h["port"]))
         t.add_row("3", "สคริปต์ส่งทุก (วินาที)", str(h["interval"]))
         t.add_row("4", "ถือว่าหยุดส่งเมื่อเงียบเกิน (วินาที)", str(h["timeout"]))
-        t.add_row("5", "สร้างไฟล์สคริปต์ .lua ให้แต่ละอินสแตนซ์", "")
+        t.add_row("5", "สร้างไฟล์สคริปต์ .lua ให้แต่ละอินสแตนซ์ (โฟลเดอร์ heartbeat/)", "")
+        t.add_row("6", "โฟลเดอร์ autoexec ของ Delta (ใส่ {pkg} = แยกโฟลเดอร์ต่อโคลน)", T(", ".join(cfg.d["autoexec"]["dirs"])))
+        t.add_row("7", "สร้าง/อัปเดต heartbeat.lua ในโฟลเดอร์นั้นอัตโนมัติ", onoff(cfg.d["autoexec"]["auto_create"]))
+        t.add_row("8", "สร้าง/อัปเดต heartbeat.lua ตอนนี้", "")
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
@@ -1889,6 +1991,8 @@ def menu_heartbeat(cfg):
             v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
             if v.isdigit() and lo <= int(v) <= hi:
                 h[key] = int(v)
+                if cfg.d["autoexec"]["auto_create"]:
+                    report_autoexec(cfg, install_autoexec(cfg))   # keep the installed script in sync (port/interval)
             elif v:
                 say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
                 pause()
@@ -1896,6 +2000,15 @@ def menu_heartbeat(cfg):
             for p in write_heartbeat_files(cfg):
                 say("สร้างแล้ว: " + p, "green")
             say("คัดลอกไฟล์ของแต่ละโคลนไปไว้ในโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ในโคลนนั้น (หรือรันตอนเข้าเกม)", "dim")
+            pause()
+        elif c == "6":
+            v = ask("พาธโฟลเดอร์ autoexec (Enter=ไม่เปลี่ยน, คั่นหลายโฟลเดอร์ด้วยคอมมา):")
+            if v:
+                cfg.d["autoexec"]["dirs"] = [x.strip() for x in v.split(",") if x.strip().startswith("/")] or cfg.d["autoexec"]["dirs"]
+        elif c == "7":
+            cfg.d["autoexec"]["auto_create"] = not cfg.d["autoexec"]["auto_create"]
+        elif c == "8":
+            report_autoexec(cfg, install_autoexec(cfg), quiet_ok=False)
             pause()
         cfg.save()
 
@@ -2101,6 +2214,8 @@ def main():
         say("เขียน /sdcard/Download ไม่ได้ (ยังไม่อนุญาตที่เก็บข้อมูล?) ใช้โฟลเดอร์สำรอง: " + BASE, "yellow")
     say("กำลังสแกนแพ็กเกจ...", "dim")
     refresh_packages(cfg)
+    if cfg.d["autoexec"]["auto_create"]:
+        report_autoexec(cfg, install_autoexec(cfg))
     if cfg.d["auto"]["start_on_launch"] and parse_link(cfg.d["game_link"]) and cfg.d["detected"]:
         say("เริ่มอัตโนมัติใน 5 วินาที (Ctrl+C เพื่อยกเลิก)", "yellow")
         try:
@@ -2137,4 +2252,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        say("\nออกจากโปรแกรม", "cyan")
+        say("\nออกจากโปรแกรม ขอบคุณที่ใช้ ไอควายเผือก", "cyan")
