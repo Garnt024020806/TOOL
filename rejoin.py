@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import select
 import shlex
 import shutil
 import sqlite3
@@ -28,6 +29,12 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 try:
+    import termios
+    import tty
+except ImportError:  # not a POSIX terminal
+    termios = tty = None
+
+try:
     import requests
     from rich import box
     from rich.console import Console, Group
@@ -39,7 +46,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.3"
+VERSION = "1.4"
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
   ____    _    ____  _   _ _____
@@ -152,6 +159,7 @@ DEFAULTS = {
     },
     "heartbeat": {"enabled": False, "port": 8765, "interval": 15, "timeout": 90},
     "performance": {"low_cpu": True, "ui_refresh_sec": 2},
+    "console_webhook": {"enabled": False, "url": "", "flush_sec": 10},   # blank url = reuse the main webhook
     "dialog_detect": {"enabled": True, "every_sec": 30, "confirm": 2},
     "screen_guard": {"enabled": True, "check_sec": 60, "fix_stacked": True, "kill_stray": False,
                      "keep": ["com.termux", "com.android.systemui", "com.topjohnwu.magisk"]},
@@ -958,6 +966,162 @@ class HBServer:
             self.httpd.server_close()
 
 
+# ----------------------------------------------------------------- console webhook (mirrors the console log)
+class ConsoleHook:
+    """Buffers console/event lines and posts them to Discord in batches (code block, <= 1900 chars)."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.q = deque(maxlen=300)
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+
+    def url(self):
+        c = self.cfg.d["console_webhook"]
+        return c["url"] or self.cfg.d["webhook"]["url"]
+
+    def active(self):
+        return bool(self.cfg.d["console_webhook"]["enabled"] and self.url())
+
+    def push(self, line):
+        if self.active():
+            with self.lock:
+                self.q.append(scrub(line)[:300])
+
+    def start(self):
+        if self.active():
+            threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while not self.stop.wait(max(3, int(self.cfg.d["console_webhook"]["flush_sec"]))):
+            self.flush()
+
+    def flush(self):
+        with self.lock:
+            lines = list(self.q)
+            self.q.clear()
+        if not lines or not self.url():
+            return True
+        ok, chunk, size = True, [], 0
+        for ln in lines + [None]:
+            if ln is None or size + len(ln) + 1 > 1850:
+                if chunk:
+                    ok = self._post("\n".join(chunk)) and ok
+                chunk, size = [], 0
+            if ln is not None:
+                chunk.append(ln)
+                size += len(ln) + 1
+        return ok
+
+    def _post(self, text):
+        try:
+            for _ in range(2):
+                r = requests.post(self.url(), json={"username": "GARNT CONSOLE", "content": "```\n%s\n```" % text}, timeout=15)
+                if r.status_code == 429:
+                    time.sleep(min(float(r.json().get("retry_after", 2)), 10))
+                    continue
+                return r.status_code < 300
+        except Exception as e:
+            log.warning("console webhook ล้มเหลว: %s", scrub(e))
+        return False
+
+    def close(self):
+        self.stop.set()
+        self.flush()
+
+
+# ----------------------------------------------------------------- raw keyboard input + live loop
+class RawInput:
+    """cbreak keyboard reader: no echo, no Enter needed for polling; Ctrl+C still raises KeyboardInterrupt."""
+
+    def __init__(self):
+        self.fd, self.old, self.buf, self.dirty, self._cr = None, None, "", False, False
+
+    def __enter__(self):
+        if termios and sys.stdin.isatty():
+            try:
+                self.fd = sys.stdin.fileno()
+                self.old = termios.tcgetattr(self.fd)
+                tty.setcbreak(self.fd)
+            except Exception:
+                self.fd = None
+        return self
+
+    def __exit__(self, *a):
+        if self.fd is not None and self.old is not None:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
+            except Exception:
+                pass
+
+    def feed(self, txt):
+        """Process typed text -> list of completed lines (may include "" for a bare Enter)."""
+        lines, i = [], 0
+        self._cr = False   # CR+LF is merged only inside one chunk
+        while i < len(txt):
+            ch = txt[i]
+            if ch == "\x1b":  # skip arrow keys / other escape sequences
+                m = re.match(r"\x1b(\[[0-9;?]*[ -/]*[@-~]|O.)", txt[i:])
+                i += len(m.group(0)) if m else 1
+                continue
+            if ch in "\r\n":
+                if not (ch == "\n" and self._cr):
+                    lines.append(self.buf)
+                    self.buf = ""
+                self._cr = ch == "\r"
+            else:
+                self._cr = False
+                if ch in "\x7f\b":
+                    self.buf = self.buf[:-1]
+                elif ch == "\x15":
+                    self.buf = ""
+                elif ch.isprintable() and len(self.buf) < 120:
+                    self.buf += ch
+            self.dirty = True
+            i += 1
+        return lines
+
+    def poll(self, timeout):
+        if self.fd is None:
+            time.sleep(timeout)
+            return []
+        r, _, _ = select.select([self.fd], [], [], timeout)
+        if not r:
+            return []
+        return self.feed(os.read(self.fd, 256).decode("utf-8", "ignore"))
+
+
+def run_live(render, handler, refresh_sec, inp=None, once=False):
+    """Live panel + typed commands. render(buf) -> renderable; handler(line) may return "quit"."""
+    refresh_sec = max(0.5, float(refresh_sec))
+    with (inp or RawInput()) as ri, Live(console=console, auto_refresh=False) as live:
+        live.update(render(ri.buf), refresh=True)
+        if once and getattr(ri, "fd", 1) is None:   # no keyboard (not a terminal): show once and return
+            return
+        last = time.time()
+        while True:
+            lines = ri.poll(refresh_sec)
+            for ln in lines:
+                if handler(ln) == "quit":
+                    live.update(render(ri.buf), refresh=True)
+                    return
+            if lines or ri.dirty or time.time() - last >= refresh_sec:
+                ri.dirty = False
+                live.update(render(ri.buf), refresh=True)
+                last = time.time()
+
+
+def sys_load():
+    try:
+        with open("/proc/loadavg") as f:
+            return float(f.read().split()[0])
+    except Exception:
+        return None
+
+
+CONSOLE_HELP = ("คำสั่ง: rejoin <เลข|all> | pause <เลข|all> | resume <เลข|all> | status | ram | shot | clear | help | quit")
+
+
 # ----------------------------------------------------------------- engine
 class Inst:
     def __init__(self, idx, pkg, cookie=None):
@@ -969,6 +1133,7 @@ class Inst:
         self.cookie_bad = False
         self.pres_at, self.pres_val = 0.0, None
         self.dlg_hits, self.dlg_serial = 0, 0
+        self.wake, self.cmd, self.paused = threading.Event(), "", False
         self.state, self.detail = "queued", ""
         self.fails = self.rejoins = 0
         self.launched_at = 0.0
@@ -984,7 +1149,7 @@ REASON = {"dead": "แอปปิด/ค้าง (ไม่พบโปรเ�
 STATE_TH = {"queued": ("รอคิวเปิด", "dim"), "launching": ("กำลังเปิดแอป", "cyan"),
             "joining": ("กำลังเข้าเกม", "yellow"), "ok": ("ปกติ", "bold green"),
             "unknown": ("ไม่ทราบสถานะ", "magenta"), "backoff": ("รอรีจอย", "bold red"),
-            "stopped": ("หยุดแล้ว", "dim")}
+            "stopped": ("หยุดแล้ว", "dim"), "paused": ("หยุดชั่วคราว", "yellow")}
 
 
 def fmt_dur(sec):
@@ -996,8 +1161,9 @@ class Engine:
     MIN = 60        # seconds per "minute" (overridable for tests)
     HK_TICK = 30    # housekeeping resolution in seconds
 
-    def __init__(self, cfg, hook, uri, instances, hb=None):
+    def __init__(self, cfg, hook, uri, instances, hb=None, chook=None):
         self.cfg, self.hook, self.uri, self.insts, self.hb = cfg, hook, uri, instances, hb
+        self.chook = chook
         self.stop = threading.Event()
         self.gate = threading.Lock()
         self.last_launch = 0.0
@@ -1010,8 +1176,11 @@ class Engine:
     # -- helpers
     def event(self, msg, style=""):
         msg = scrub(msg)
-        self.events.append((datetime.now().strftime("%H:%M:%S"), msg, style))
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.events.append((ts, msg, style))
         log.info(msg)
+        if self.chook:
+            self.chook.push("%s %s" % (ts, msg))
 
     def interval(self):
         return max(10, int(self.cfg.d["check_interval"]))
@@ -1029,6 +1198,8 @@ class Engine:
 
     def shutdown(self):
         self.stop.set()
+        for i in self.insts:
+            i.wake.set()
         for t in self.threads:
             t.join(timeout=5)
         wake_lock(False)
@@ -1098,17 +1269,86 @@ class Engine:
         else:
             self.event("ล้างแรมไม่สำเร็จ", "red")
 
-    def report(self, minutes):
+    def report(self, minutes, shot=None):
         w = self.cfg.d["webhook"]
-        if not (w["enabled"] and w["url"] and w["events"].get("status")):
+        if not (w["enabled"] and w["url"] and (w["events"].get("status") or minutes is None)):
             return
-        shot = take_shot("status") if (ENV.root and w["send_screenshot"]) else None
+        if shot is None and minutes is not None and ENV.root and w["send_screenshot"]:
+            shot = take_shot("status")
         mem = mem_available_mb()
         fields = [(i.label, "%s | รีจอย %d | ล้มเหลว %d%s" % (STATE_TH.get(i.state, (i.state,))[0], i.rejoins, i.fails,
                                                               (" | " + i.user) if i.user else "")) for i in self.insts][:22]
         fields.append(("RAM ว่าง", ("%d MB" % mem) if mem is not None else "-"))
         fields.append(("รันมาแล้ว", fmt_dur(time.time() - self.t0)))
-        self.hook.send("status", "📸 รายงานสถานะ", "รายงานประจำทุก %d นาที" % minutes, fields, shot)
+        self.hook.send("status", "📸 รายงานสถานะ", "รายงานตามคำสั่ง" if minutes is None else "รายงานประจำทุก %d นาที" % minutes, fields, shot)
+
+    # -- console commands (typed in the live panel)
+    def _take_cmd(self, inst):
+        cmd, inst.cmd = inst.cmd, ""
+        inst.wake.clear()
+        return cmd
+
+    def _manual(self, inst):
+        cmd = self._take_cmd(inst)
+        if cmd == "pause":
+            inst.paused, inst.state, inst.detail = True, "paused", "หยุดชั่วคราวด้วยคำสั่ง (พิมพ์ resume)"
+            self.event("%s: หยุดชั่วคราว" % inst.label, "yellow")
+        elif cmd in ("rejoin", "resume"):
+            inst.paused, inst.fails, inst.ok_since = False, 0, None
+            self.event("%s: รีจอยด้วยคำสั่ง" % inst.label, "cyan")
+            self._launch(inst, "rejoin", force=True)
+
+    def _targets(self, arg):
+        if arg in ("all", "a", "*"):
+            return list(self.insts)
+        return [i for i in self.insts if arg.isdigit() and i.idx == int(arg)]
+
+    def console(self, line):
+        line = line.strip()
+        if not line:
+            return None
+        self.event("› " + line, "dim")
+        parts = line.split()
+        cmd, args = parts[0].lower(), [a.lower() for a in parts[1:]]
+        if cmd in ("quit", "exit", "q"):
+            return "quit"
+        if cmd in ("help", "?", "h"):
+            self.event(CONSOLE_HELP, "cyan")
+        elif cmd in ("rejoin", "r", "pause", "p", "resume"):
+            act = {"r": "rejoin", "p": "pause"}.get(cmd, cmd)
+            ts = self._targets(args[0]) if args else []
+            if not ts:
+                self.event("ใช้: %s <เลขอินสแตนซ์|all>" % cmd, "red")
+            else:
+                for i in ts:
+                    i.cmd = act
+                    i.wake.set()
+                self.event("สั่ง %s อินสแตนซ์ %s" % (act, ", ".join(str(i.idx) for i in ts)), "cyan")
+        elif cmd == "status":
+            for i in self.insts:
+                self.event("#%d %s | %s" % (i.idx, STATE_TH.get(i.state, (i.state,))[0], i.detail or "-"))
+        elif cmd in ("ram", "shot", "clear"):
+            if not ENV.root:
+                self.event("คำสั่ง %s ต้องใช้รูท" % cmd, "red")
+            else:
+                threading.Thread(target=self._cmd_root, args=(cmd,), daemon=True).start()
+        else:
+            self.event("ไม่รู้จักคำสั่ง: %s (พิมพ์ help)" % cmd, "red")
+        return None
+
+    def _cmd_root(self, cmd):
+        try:
+            if cmd == "ram":
+                self.clear_ram("คำสั่ง")
+            elif cmd == "clear":
+                self.event("ล้างหน้าจอ: " + ", ".join(screen_clear(self.cfg, screen_scan(self.cfg), force_all=True)), "yellow")
+            else:
+                path = take_shot("console")
+                self.event("บันทึกภาพหน้าจอ: %s" % os.path.basename(path) if path else "แคปหน้าจอไม่สำเร็จ", "cyan" if path else "red")
+                if path:
+                    self.report(None, shot=path)
+        except Exception as e:
+            self.event("คำสั่ง %s ผิดพลาด: %s" % (cmd, e), "red")
 
     # -- worker
     def _worker(self, inst):
@@ -1117,17 +1357,21 @@ class Engine:
                 return
             while True:
                 inst.next_at = self._next_tick()
-                if self.stop.wait(max(0.1, inst.next_at - time.time())):
+                woke = inst.wake.wait(max(0.1, inst.next_at - time.time()))
+                if self.stop.is_set():
                     break
                 try:
-                    self._tick(inst)
+                    if woke:
+                        self._manual(inst)
+                    elif not inst.paused:
+                        self._tick(inst)
                 except Exception as e:
                     self.event("%s: ข้อผิดพลาด %s" % (inst.label, e), "red")
         except Exception as e:
             self.event("%s: worker หยุดเพราะ %s" % (inst.label, e), "red")
         inst.state = "stopped"
 
-    def _launch(self, inst, kind):
+    def _launch(self, inst, kind, force=False):
         c = self.cfg.d
         inst.state, inst.detail = "queued", "รอคิวเปิดแอป"
         with self.gate:
@@ -1137,7 +1381,7 @@ class Engine:
             if self.stop.is_set():
                 return False
             inst.state, inst.detail = "launching", ""
-            ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"])
+            ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"] or force)
             self.last_launch = time.time()
         inst.launched_at = time.time()
         inst.pres_at = 0.0
@@ -1280,34 +1524,45 @@ class Engine:
             self.event("%s: %s" % (inst.label, REASON[reason]), "cyan")
         if delay:
             inst.state, inst.next_at = "backoff", time.time() + delay
-            if self.stop.wait(delay):
-                return
+            if inst.wake.wait(delay):
+                if self.stop.is_set():
+                    return
+                if self._take_cmd(inst) == "pause":
+                    inst.paused, inst.state, inst.detail = True, "paused", "หยุดชั่วคราวด้วยคำสั่ง (พิมพ์ resume)"
+                    return
         self._launch(inst, "rejoin")
 
     # -- live panel
-    def render(self):
+    def render(self, buf=None):
         now = time.time()
         mem = mem_available_mb()
+        load = sys_load()
         head = Text.assemble(
             ("โหมด: ", "dim"), ("ROOT" if ENV.root else "ไม่รูท", "bold green" if ENV.root else "bold yellow"),
             ("  |  ตรวจทุก %ds" % self.interval(), ""), ("  |  หน่วงเปิด %ss" % self.cfg.d["launch_delay"], ""),
             ("  |  รันมา " + fmt_dur(now - self.t0), "bold"),
             (("  |  RAM ว่าง %d MB" % mem) if mem is not None else "", ""),
-            ("\nกด Ctrl+C เพื่อหยุดและกลับเมนู", "dim"))
+            (("  |  โหลด %.1f" % load) if load is not None else "", ""),
+            ("\nพิมพ์คำสั่งแล้วกด Enter (help = รายการคำสั่ง) | quit หรือ Ctrl+C = หยุดและกลับเมนู", "dim"))
         t = Table(box=box.SIMPLE_HEAVY, expand=True, header_style="bold cyan")
-        for col in ("#", "แพ็กเกจ", "บัญชี", "สถานะ", "ล้มเหลว", "รีจอย", "ถัดไป", "รายละเอียด"):
+        for col in ("#", "แพ็กเกจ", "บัญชี", "สถานะ", "เล่นมา", "ล้มเหลว", "รีจอย", "ถัดไป", "รายละเอียด"):
             t.add_column(col, overflow="fold")
         for i in self.insts:
             label, style = STATE_TH.get(i.state, (i.state, ""))
             nxt = "%ds" % max(0, int(i.next_at - now)) if i.next_at and i.state in ("ok", "unknown", "joining", "backoff") else "-"
-            t.add_row(str(i.idx), i.pkg, i.user or "-", Text(label, style=style), str(i.fails),
+            up = fmt_dur(now - i.ok_since) if i.ok_since and i.state == "ok" else "-"
+            t.add_row(str(i.idx), i.pkg, i.user or "-", Text(label, style=style), up, str(i.fails),
                       str(i.rejoins), nxt, T(i.detail))
         ev = Text()
-        for ts, msg, st in list(self.events):
+        for ts, msg, st in list(reversed(self.events))[:8]:   # newest first so cropping never hides the latest
             ev.append(ts + "  ", style="dim")
             ev.append(msg + "\n", style=st)
-        return Group(Panel(head, title="GARNT TOOL REJOIN", border_style="cyan"), t,
-                     Panel(ev, title="เหตุการณ์ล่าสุด", border_style="blue"))
+        parts = [Panel(head, title="GARNT TOOL REJOIN", border_style="cyan"), t]
+        if buf is not None:
+            parts.append(Panel(Text.assemble(("› ", "bold yellow"), (scrub(buf), "bold"), ("█", "blink")),
+                               title="คอนโซล", border_style="yellow"))
+        parts.append(Panel(ev, title="เหตุการณ์ล่าสุด (ใหม่สุดอยู่บน)", border_style="blue"))
+        return Group(*parts)
 
 
 # ----------------------------------------------------------------- ui helpers
@@ -1339,8 +1594,14 @@ def onoff(v):
     return Text("เปิด" if v else "ปิด", style="bold green" if v else "bold red")
 
 
+def clear_screen():
+    if sys.stdout.isatty():
+        sys.stdout.write("\033[3J\033[2J\033[H")
+        sys.stdout.flush()
+
+
 def banner(cfg):
-    console.clear()
+    clear_screen()
     console.print(Text(LOGO.strip("\n"), style="bold cyan"), highlight=False)
     console.print(Text("      T O O L   R E J O I N   •   ควายเผือก rejoin   •   v" + VERSION, style="bold magenta"))
     link = bool(cfg.d["game_link"])
@@ -1404,31 +1665,29 @@ def menu_start(cfg, hook):
     apply_perf(cfg)
     pf = cfg.d["performance"]
     rate = 1.0 / max(1, int(pf["ui_refresh_sec"])) if pf["low_cpu"] else 2
-    eng = Engine(cfg, hook, parsed[0], insts, hb)
+    chook = ConsoleHook(cfg)
+    chook.start()
+    eng = Engine(cfg, hook, parsed[0], insts, hb, chook)
     eng.start()
     try:
-        with Live(get_renderable=eng.render, console=console, refresh_per_second=rate):
-            while True:
-                time.sleep(1)
+        run_live(eng.render, eng.console, 1.0 / rate)
     except KeyboardInterrupt:
         pass
     say("\nกำลังหยุด...", "yellow")
     eng.shutdown()
+    chook.close()
     if hbs:
         hbs.stop()
     say("หยุดการทำงานแล้ว", "green")
     pause()
 
 
-def menu_status(cfg):
+def status_view(cfg, info, buf=""):
     det = cfg.d["detected"]
-    if not det:
-        say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
-        return pause()
-    pairs, n_ck = cookie_pairs(cfg)
+    pairs, n_ck = info
     cmap = dict(pairs)
     fg = foreground_text() if ENV.root else ""
-    t = Table(title="อินสแตนซ์ที่ตรวจพบ", box=box.ROUNDED, header_style="bold cyan")
+    t = Table(title="อินสแตนซ์ที่ตรวจพบ", box=box.ROUNDED, header_style="bold cyan", expand=True)
     for col in ("#", "แพ็กเกจ", "เลือกรัน", "คุกกี้", "ทำงานอยู่", "อยู่หน้าจอ"):
         t.add_column(col)
     sel = selected_packages(cfg)
@@ -1437,12 +1696,25 @@ def menu_status(cfg):
         run = Text("ใช่", style="green") if alive else (Text("ไม่", style="red") if ENV.root else Text("ไม่ทราบ", style="magenta"))
         front = Text("-") if not ENV.root else (Text("ใช่", style="green") if (pkg + "/") in fg else Text("ไม่", style="dim"))
         t.add_row(str(i), pkg, onoff(pkg in sel), Text("มี" if pkg in cmap else "-"), run, front)
-    console.print(t)
-    say("โหมด: %s | ตรวจทุก %ss | หน่วงเปิด %ss | คุกกี้ในไฟล์: %d บรรทัด" % (
-        "ROOT" if ENV.root else "ไม่รูท", cfg.d["check_interval"], cfg.d["launch_delay"], n_ck), "dim")
-    if not ENV.root:
-        say("โหมดไม่รูทตรวจโปรเซส/หน้าจอไม่ได้ ใช้ข้อมูลสถานะเกมจากคุกกี้แทน", "yellow")
-    pause()
+    mem, load = mem_available_mb(), sys_load()
+    foot = "โหมด: %s | ตรวจทุก %ss | หน่วงเปิด %ss | คุกกี้ในไฟล์: %d บรรทัด | RAM ว่าง %s MB | โหลด %s%s" % (
+        "ROOT" if ENV.root else "ไม่รูท", cfg.d["check_interval"], cfg.d["launch_delay"], n_ck,
+        mem if mem is not None else "?", ("%.1f" % load) if load is not None else "?",
+        "" if ENV.root else " | โหมดไม่รูทตรวจโปรเซส/หน้าจอไม่ได้")
+    return Group(t, T(foot, "dim"), T("แผงสดรีเฟรชอัตโนมัติ — กด Enter หรือ Ctrl+C เพื่อกลับเมนู", "yellow"))
+
+
+def menu_status(cfg):
+    if not cfg.d["detected"]:
+        say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
+        return pause()
+    info = cookie_pairs(cfg)
+    pf = cfg.d["performance"]
+    try:
+        run_live(lambda buf: status_view(cfg, info, buf), lambda ln: "quit",
+                 max(1, int(pf["ui_refresh_sec"])) if pf["low_cpu"] else 1, once=True)
+    except KeyboardInterrupt:
+        pass
 
 
 def menu_settings(cfg):
@@ -1734,7 +2006,9 @@ def menu_webhook(cfg, hook):
     names = [("start", "เริ่มทำงาน"), ("crash", "หลุด/ค้าง"), ("rejoin", "รีจอยแล้ว"), ("stop", "หยุดทำงาน"),
              ("status", "รายงานสถานะ+ภาพหน้าจอเป็นรอบ")]
     n_shot = 3 + len(names)
-    n_per, n_test = n_shot + 1, n_shot + 2
+    n_per = n_shot + 1
+    n_cu, n_ce, n_cf, n_ct, n_test = n_per + 1, n_per + 2, n_per + 3, n_per + 4, n_per + 5
+    cw = cfg.d["console_webhook"]
     while True:
         banner(cfg)
         t = Table(title="Discord Webhook", box=box.ROUNDED, header_style="bold cyan")
@@ -1746,6 +2020,10 @@ def menu_webhook(cfg, hook):
             t.add_row(str(i), "แจ้งเตือน: " + label, onoff(w["events"][k]))
         t.add_row(str(n_shot), "แนบภาพหน้าจอ (รูทเท่านั้น, เก็บล่าสุด %d รูป)" % MAX_SHOTS, onoff(w["send_screenshot"]))
         t.add_row(str(n_per), "ส่งรายงานสถานะ+ภาพหน้าจอทุกกี่นาที (0=ปิด)", str(w["periodic_min"]))
+        t.add_row(str(n_cu), "Console webhook: URL (ว่าง = ใช้ URL หลัก)", T(scrub(cw["url"]) or "(ใช้ URL หลัก)"))
+        t.add_row(str(n_ce), "Console webhook: ส่งบันทึกคอนโซลเข้า Discord", onoff(cw["enabled"]))
+        t.add_row(str(n_cf), "Console webhook: รวมส่งทุก (วินาที, 3-300)", str(cw["flush_sec"]))
+        t.add_row(str(n_ct), "ทดสอบ Console webhook", "")
         t.add_row(str(n_test), "ส่งข้อความทดสอบ", "")
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
@@ -1774,6 +2052,32 @@ def menu_webhook(cfg, hook):
             elif v:
                 say("ต้องเป็นตัวเลข 0-1440", "red")
                 pause()
+        elif c == str(n_cu):
+            v = ask("วาง URL Console webhook (Enter=ใช้ URL หลัก):")
+            if not v:
+                cw["url"] = ""
+            elif HOOK_RE.match(v):
+                cw["url"] = v
+            else:
+                say("รูปแบบ URL ไม่ถูกต้อง", "red")
+                pause()
+        elif c == str(n_ce):
+            cw["enabled"] = not cw["enabled"]
+        elif c == str(n_cf):
+            v = ask("ค่าใหม่ (3-300):")
+            if v.isdigit() and 3 <= int(v) <= 300:
+                cw["flush_sec"] = int(v)
+            elif v:
+                say("ต้องเป็นตัวเลข 3-300", "red")
+                pause()
+        elif c == str(n_ct):
+            ch = ConsoleHook(cfg)
+            if not ch.url():
+                say("ยังไม่มี URL (ตั้ง URL หลักหรือ Console URL ก่อน)", "red")
+            else:
+                ok = ch._post("GARNT TOOL REJOIN: ทดสอบ console webhook ✅")
+                say("ส่งสำเร็จ" if ok else "ส่งไม่สำเร็จ ตรวจสอบ URL", "green" if ok else "red")
+            pause()
         elif c == str(n_test):
             ok = hook.send("test", "✅ ทดสอบ Webhook", "เชื่อมต่อสำเร็จ", [("โหมด", "ROOT" if ENV.root else "ไม่รูท")], sync=True)
             say("ส่งสำเร็จ" if ok else "ส่งไม่สำเร็จ ตรวจสอบ URL", "green" if ok else "red")
