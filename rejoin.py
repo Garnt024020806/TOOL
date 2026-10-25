@@ -326,17 +326,35 @@ def mem_available_mb():
         return None
 
 
+def AM():
+    """Use the system `am` when root: Termux's wrapper `am` often fails under su."""
+    return "/system/bin/am" if ENV.root and os.path.exists("/system/bin/am") else "am"
+
+
+RAM_LAST = {"detail": ""}
+
+
 def drop_ram(kill_cached=False):
-    """Root only. Drop page cache (and optionally kill cached background apps). -> (ok, before_mb, after_mb)"""
+    """Root only. Drop page cache (and optionally kill cached background apps).
+    -> (ok, before_mb, after_mb); a per-step report is left in RAM_LAST["detail"]."""
     if not ENV.root:
+        RAM_LAST["detail"] = "ต้องใช้รูท"
         return False, None, None
     before = mem_available_mb()
-    cmd = "sync; echo 3 > /proc/sys/vm/drop_caches"
+    steps = []
+    rc, out = sh("sync; echo 3 > /proc/sys/vm/drop_caches", root=True, timeout=40)
+    steps.append(("drop_caches", rc == 0, out))
+    if rc != 0:  # read-only /proc/sys (containers / cloud phones) or SELinux: try sysctl
+        rc, out = sh("sysctl -w vm.drop_caches=3", root=True, timeout=20)
+        steps.append(("sysctl", rc == 0, out))
     if kill_cached:
-        cmd += "; am kill-all"
-    rc, _ = sh(cmd, root=True, timeout=40)
+        rc, out = sh(AM() + " kill-all", root=True, timeout=30)
+        steps.append(("kill-all", rc == 0, out))
     time.sleep(1)
-    return rc == 0, before, mem_available_mb()
+    RAM_LAST["detail"] = "; ".join(
+        "%s: %s" % (n, "ok" if ok else (" ".join(m.split())[:90] or "failed")) for n, ok, m in steps)
+    log.info("ram steps: %s", RAM_LAST["detail"])
+    return any(ok for _, ok, _ in steps), before, mem_available_mb()
 
 
 def sh_bytes(cmd, root=False, timeout=25):
@@ -497,19 +515,19 @@ def stray_pkg(cfg, info):
 def screen_clear(cfg, info, force_all=False):
     """Close system dialogs and force-stop apps causing stacked/overlapping windows. -> list of actions (Thai)."""
     g, prefix, q = cfg.d["screen_guard"], cfg.d["package_prefix"], shlex.quote
-    sh("am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS", root=True, timeout=20)
+    sh(AM() + " broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS", root=True, timeout=20)
     acts = ["ปิดหน้าต่างระบบ"]
     for p in sorted(info["dialogs"]):
         if p != "?" and (p.startswith(prefix) or (g["kill_stray"] and p not in g["keep"])):
-            sh("am force-stop " + q(p), root=True, timeout=20)
+            sh(AM() + " force-stop " + q(p), root=True, timeout=20)
             acts.append("force-stop %s (หน้าต่างแจ้งข้อผิดพลาด)" % p)
     if g["fix_stacked"] or force_all:
         for p in info["stacked"]:
-            sh("am force-stop " + q(p), root=True, timeout=20)
+            sh(AM() + " force-stop " + q(p), root=True, timeout=20)
             acts.append("force-stop %s (หน้าต่างซ้อน)" % p)
     sp = stray_pkg(cfg, info)
     if sp:
-        sh("am force-stop " + q(sp), root=True, timeout=20)
+        sh(AM() + " force-stop " + q(sp), root=True, timeout=20)
         acts.append("force-stop %s (ขึ้นทับหน้าจอ)" % sp)
     return acts
 
@@ -583,9 +601,9 @@ def parse_link(link):
 def open_game(pkg, uri, force_stop):
     q = shlex.quote
     if ENV.root and force_stop:
-        sh("am force-stop " + q(pkg), root=True, timeout=20)
+        sh(AM() + " force-stop " + q(pkg), root=True, timeout=20)
         time.sleep(2)
-    cmd = "am start -a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
+    cmd = AM() + " start -a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
     rc, out = sh(cmd, root=ENV.root, timeout=30)
     if rc != 0 or re.search(r"Error|Exception|unable to resolve", out, re.I):
         rc, out2 = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % q(pkg), root=ENV.root, timeout=30)
@@ -749,7 +767,7 @@ def inject_cookie(pkg, cookie):
     own = own.strip()
     if not re.fullmatch(r"\d+:\d+", own):
         return False, "อ่านเจ้าของโฟลเดอร์แอปไม่ได้"
-    sh("am force-stop " + q(pkg), root=True)
+    sh(AM() + " force-stop " + q(pkg), root=True)
     tmp = os.path.join(TMP_DIR, "garnt_%s.db" % pkg.replace(".", "_"))
     try:
         rc, o = sh("cp %s %s && chmod 666 %s" % (q(path), q(tmp), q(tmp)), root=True)
@@ -1363,7 +1381,7 @@ class Engine:
         if ok:
             self.event("ล้างแรม (%s): ว่าง %s → %s MB" % (why, before, after), "cyan")
         else:
-            self.event("ล้างแรมไม่สำเร็จ", "red")
+            self.event("ล้างแรมไม่สำเร็จ: %s" % RAM_LAST["detail"], "red")
 
     def report(self, minutes, shot=None):
         w = self.cfg.d["webhook"]
@@ -2109,7 +2127,14 @@ def menu_perf(cfg):
                 pause()
         elif c == "7":
             ok, b4, af = drop_ram(r["kill_cached"])
-            say(("ล้างแรมแล้ว: ว่าง %s → %s MB" % (b4, af)) if ok else "ล้างแรมไม่สำเร็จ (ต้องใช้รูท)", "green" if ok else "red")
+            say(("ล้างแรมแล้ว: ว่าง %s → %s MB" % (b4, af)) if ok else ("ล้างแรมไม่สำเร็จ: " + RAM_LAST["detail"]),
+                "green" if ok else "red")
+            if ok:
+                say("ผลแต่ละขั้น: " + RAM_LAST["detail"], "dim")
+                if b4 is not None and af is not None and af - b4 < 100:
+                    say("แรมว่างแทบไม่เพิ่ม: drop_caches ล้างได้เฉพาะแคช ไม่ใช่แรมที่แอปใช้อยู่", "yellow")
+            elif ENV.root and not r["kill_cached"]:
+                say("ลองเปิดข้อ 4 (am kill-all) เมื่อเครื่องไม่ให้เขียน drop_caches (มักเป็นตู้คลาวด์/คอนเทนเนอร์)", "yellow")
             pause()
         cfg.save()
 
@@ -2252,4 +2277,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        say("\nออกจากโปรแกรม ขอบคุณที่ใช้ ไอควายเผือก", "cyan")
+        say("\nออกจากโปรแกรม", "cyan")
