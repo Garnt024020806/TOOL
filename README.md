@@ -28,7 +28,7 @@ termux-change-repo
 
 ### ขั้นที่ 2 — ติดตั้งด้วยคำสั่งเดียว
 ```
-curl -Ls https://raw.githubusercontent.com/Garnt024020806/TOOL/refs/heads/main/setup.sh | bash
+curl -Ls https://raw.githubusercontent.com/Garnt024020806/TOOL/main/setup.sh | bash
 ```
 สคริปต์ทำตามลำดับ: `termux-setup-storage` → `pkg update/upgrade` → `python`, `python-pip`, `tsu`, `libexpat`, `openssl` → `pip install -r requirements.txt` → ดาวน์โหลด `rejoin.py` ไปที่ `/sdcard/Download/rejoin.py` (และสำเนาที่ `~/rejoin.py`)
 
