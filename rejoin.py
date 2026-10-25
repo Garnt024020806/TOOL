@@ -165,7 +165,8 @@ DEFAULTS = {
     "dialog_detect": {"enabled": True, "every_sec": 30, "confirm": 2},
     "screen_guard": {"enabled": True, "check_sec": 60, "fix_stacked": True, "kill_stray": False,
                      "keep": ["com.termux", "com.android.systemui", "com.topjohnwu.magisk"]},
-    "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False},
+    "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False,
+            "kill_others": False, "protect": ["termux", "magisk", "delta"]},
     "webhook": {
         "url": "",
         "enabled": False,
@@ -334,7 +335,27 @@ def AM():
 RAM_LAST = {"detail": ""}
 
 
-def drop_ram(kill_cached=False):
+def kill_others(cfg):
+    """Root only: force-stop RUNNING user-installed apps that are not protected. -> list of stopped packages.
+    Protected: Roblox clones, anything matching ram.protect (substring), screen_guard.keep, the launcher."""
+    r = cfg.d["ram"]
+    _, o3 = sh("pm list packages -3", root=True, timeout=30)
+    third = {l.split(":", 1)[1].strip() for l in o3.splitlines() if l.startswith("package:")}
+    snap = snapshot()
+    if not snap["ps_ok"]:
+        raise RuntimeError("cannot list processes")
+    running = {p.split(":")[0] for p in snap["procs"]}
+    # termux/root managers are ALWAYS protected, whatever the user types in the protect list
+    prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [cfg.d["package_prefix"].lower(),
+                                                                      "termux", "magisk", "kernelsu", "supersu"])
+    keep = set(cfg.d["detected"]) | set(cfg.d["screen_guard"]["keep"]) | {home_pkg()}
+    victims = [p for p in sorted(third & running) if p not in keep and not any(x in p.lower() for x in prot)]
+    for p in victims:
+        sh(AM() + " force-stop " + shlex.quote(p), root=True, timeout=20)
+    return victims
+
+
+def drop_ram(kill_cached=False, cfg=None):
     """Root only. Drop page cache (and optionally kill cached background apps).
     -> (ok, before_mb, after_mb); a per-step report is left in RAM_LAST["detail"]."""
     if not ENV.root:
@@ -350,9 +371,15 @@ def drop_ram(kill_cached=False):
     if kill_cached:
         rc, out = sh(AM() + " kill-all", root=True, timeout=30)
         steps.append(("kill-all", rc == 0, out))
+    if cfg is not None and cfg.d["ram"]["kill_others"]:
+        try:
+            v = kill_others(cfg)
+            steps.append(("kill-others", True, ("closed %d: %s" % (len(v), ", ".join(v))) if v else "nothing to close"))
+        except Exception as e:
+            steps.append(("kill-others", False, str(e)))
     time.sleep(1)
     RAM_LAST["detail"] = "; ".join(
-        "%s: %s" % (n, "ok" if ok else (" ".join(m.split())[:90] or "failed")) for n, ok, m in steps)
+        "%s: %s" % (n, "ok" if (ok and not m.strip()) else (" ".join(m.split())[:160] or "failed")) for n, ok, m in steps)
     log.info("ram steps: %s", RAM_LAST["detail"])
     return any(ok for _, ok, _ in steps), before, mem_available_mb()
 
@@ -1377,9 +1404,9 @@ class Engine:
             self.event("ล้างหน้าจอซ้อน: " + ", ".join(screen_clear(self.cfg, info)), "yellow")
 
     def clear_ram(self, why):
-        ok, before, after = drop_ram(self.cfg.d["ram"]["kill_cached"])
+        ok, before, after = drop_ram(self.cfg.d["ram"]["kill_cached"], self.cfg)
         if ok:
-            self.event("ล้างแรม (%s): ว่าง %s → %s MB" % (why, before, after), "cyan")
+            self.event("ล้างแรม (%s): ว่าง %s → %s MB | %s" % (why, before, after, RAM_LAST["detail"]), "cyan")
         else:
             self.event("ล้างแรมไม่สำเร็จ: %s" % RAM_LAST["detail"], "red")
 
@@ -2101,9 +2128,11 @@ def menu_perf(cfg):
         t.add_row("2", "ล้างแรมทุก (นาที, 0=ไม่ล้างตามเวลา)", str(r["interval_min"]))
         t.add_row("3", "ล้างเมื่อแรมว่างต่ำกว่า (MB, 0=ปิด)", str(r["min_free_mb"]))
         t.add_row("4", "ปิดแอปพื้นหลังที่ cached ด้วย (am kill-all) ⚠ อาจปิดโคลนที่อยู่เบื้องหลัง", onoff(r["kill_cached"]))
-        t.add_row("5", "โหมดประหยัด CPU (ลดความสำคัญโปรเซส, เก็บสถานะเกมไว้ 60 วินาที, รีเฟรชจอช้าลง)", onoff(p["low_cpu"]))
-        t.add_row("6", "รีเฟรชแผงสถานะทุก (วินาที, ใช้เมื่อเปิดโหมดประหยัด CPU)", str(p["ui_refresh_sec"]))
-        t.add_row("7", "ล้างแรมเดี๋ยวนี้", "")
+        t.add_row("5", "ปิดแอปอื่นที่ไม่เกี่ยวข้องแบบปลอดภัย (force-stop แอปที่ติดตั้งเอง เว้น Roblox/Termux/Delta และรายชื่อข้อ 6)", onoff(r["kill_others"]))
+        t.add_row("6", "รายชื่อแอปที่ห้ามปิด (ส่วนของชื่อแพ็กเกจ)", ", ".join(r["protect"]))
+        t.add_row("7", "โหมดประหยัด CPU (ลดความสำคัญโปรเซส, เก็บสถานะเกมไว้ 60 วินาที, รีเฟรชจอช้าลง)", onoff(p["low_cpu"]))
+        t.add_row("8", "รีเฟรชแผงสถานะทุก (วินาที, ใช้เมื่อเปิดโหมดประหยัด CPU)", str(p["ui_refresh_sec"]))
+        t.add_row("9", "ล้างแรมเดี๋ยวนี้", "")
         console.print(t)
         free = mem_available_mb()
         say("RAM ว่างตอนนี้: %s MB%s" % (free if free is not None else "?", "" if ENV.root else "  (โหมดไม่รูทล้างแรมไม่ได้)"), "dim")
@@ -2115,26 +2144,32 @@ def menu_perf(cfg):
         elif c == "4":
             r["kill_cached"] = not r["kill_cached"]
         elif c == "5":
+            r["kill_others"] = not r["kill_others"]
+        elif c == "6":
+            v = ask("รายชื่อที่ห้ามปิด คั่นด้วยคอมมา (Enter=คงเดิม):")
+            if v:
+                r["protect"] = [x.strip() for x in v.split(",") if x.strip()]
+        elif c == "7":
             p["low_cpu"] = not p["low_cpu"]
-        elif c in ("2", "3", "6"):
+        elif c in ("2", "3", "8"):
             sec, key, lo, hi = {"2": (r, "interval_min", 0, 1440), "3": (r, "min_free_mb", 0, 8192),
-                                "6": (p, "ui_refresh_sec", 1, 10)}[c]
+                                "8": (p, "ui_refresh_sec", 1, 10)}[c]
             v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
             if v.isdigit() and lo <= int(v) <= hi:
                 sec[key] = int(v)
             elif v:
                 say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
                 pause()
-        elif c == "7":
-            ok, b4, af = drop_ram(r["kill_cached"])
+        elif c == "9":
+            ok, b4, af = drop_ram(r["kill_cached"], cfg)
             say(("ล้างแรมแล้ว: ว่าง %s → %s MB" % (b4, af)) if ok else ("ล้างแรมไม่สำเร็จ: " + RAM_LAST["detail"]),
                 "green" if ok else "red")
             if ok:
                 say("ผลแต่ละขั้น: " + RAM_LAST["detail"], "dim")
                 if b4 is not None and af is not None and af - b4 < 100:
                     say("แรมว่างแทบไม่เพิ่ม: drop_caches ล้างได้เฉพาะแคช ไม่ใช่แรมที่แอปใช้อยู่", "yellow")
-            elif ENV.root and not r["kill_cached"]:
-                say("ลองเปิดข้อ 4 (am kill-all) เมื่อเครื่องไม่ให้เขียน drop_caches (มักเป็นตู้คลาวด์/คอนเทนเนอร์)", "yellow")
+            elif ENV.root and not (r["kill_cached"] or r["kill_others"]):
+                say("ลองเปิดข้อ 5 (ปิดแอปอื่นแบบปลอดภัย) เมื่อ drop_caches ถูกล็อก (มักเป็นตู้คลาวด์/คอนเทนเนอร์)", "yellow")
             pause()
         cfg.save()
 
