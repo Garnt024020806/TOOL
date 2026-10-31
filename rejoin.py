@@ -49,12 +49,11 @@ except ImportError as _e:
 VERSION = "1.5"
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
- ██████╗  █████╗ ██████╗ ███╗   ██╗████████╗
-██╔════╝ ██╔══██╗██╔══██╗████╗  ██║╚══██╔══╝
-██║  ███╗███████║██████╔╝██╔██╗ ██║   ██║
-██║   ██║██╔══██║██╔══██╗██║╚██╗██║   ██║
-╚██████╔╝██║  ██║██║  ██║██║ ╚████║   ██║
- ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝
+  ____    _    ____  _   _ _____
+ / ___|  / \  |  _ \| \ | |_   _|
+| |  _  / _ \ | |_) |  \| | | |
+| |_| |/ ___ \|  _ <| |\  | | |
+ \____/_/   \_\_| \_\_| \_| |_|
 """
 
 for _p in ("/system/bin", "/system/xbin"):
@@ -1236,7 +1235,7 @@ class RawInput:
 def run_live(render, handler, refresh_sec, inp=None, once=False):
     """Live panel + typed commands. render(buf) -> renderable; handler(line) may return "quit"."""
     refresh_sec = max(0.5, float(refresh_sec))
-    with (inp or RawInput()) as ri, Live(console=console, auto_refresh=False) as live:
+    with (inp or RawInput()) as ri, Live(console=console, auto_refresh=False, screen=True, vertical_overflow="crop") as live:
         live.update(render(ri.buf), refresh=True)
         if once and getattr(ri, "fd", 1) is None:   # no keyboard (not a terminal): show once and return
             return
@@ -1695,8 +1694,10 @@ class Engine:
             up = fmt_dur(now - i.ok_since) if i.ok_since and i.state == "ok" else "-"
             t.add_row(str(i.idx), i.pkg, i.user or "-", Text(label, style=style), up, str(i.fails),
                       str(i.rejoins), nxt, T(i.detail))
-        ev = Text()
-        for ts, msg, st in list(reversed(self.events))[:8]:   # newest first so cropping never hides the latest
+        # fit the terminal: fixed rows = head 4 + table (n+5) + console 3 + events border 2
+        n_ev = max(1, min(8, console.size.height - (len(self.insts) + 14)))
+        ev = Text(no_wrap=True, overflow="ellipsis")
+        for ts, msg, st in list(reversed(self.events))[:n_ev]:   # newest first so cropping never hides the latest
             ev.append(ts + "  ", style="dim")
             ev.append(msg + "\n", style=st)
         parts = [Panel(head, title="GARNT TOOL REJOIN", border_style="cyan"), t]
