@@ -191,6 +191,7 @@ DEFAULTS = {
     "dialog_detect": {"enabled": True, "every_sec": 30, "confirm": 2},
     "screen_guard": {"enabled": True, "check_sec": 60, "fix_stacked": True, "kill_stray": False,
                      "keep": ["com.termux", "com.android.systemui", "com.topjohnwu.magisk"]},
+    "arrange": {"enabled": True, "cols": 0, "gap": 6, "settle_sec": 12},   # tile the game windows (root, freeform windows)
     "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False,
             "kill_others": False, "protect": ["termux", "magisk", "delta"]},
     "webhook": {
@@ -614,6 +615,76 @@ def home_pkg():
                 return m.group(1)
         return ""
     return cached("home", 3600, run)
+
+
+def grid_rects(n, w, h, cols=0, gap=6):
+    """n equal tiles (left, top, right, bottom) in row-major order. cols=0 -> pick the grid closest to the screen shape."""
+    if n <= 0 or w <= 0 or h <= 0:
+        return []
+    if cols <= 0:
+        cols = max(1, min(n, int(round((n * w / float(h)) ** 0.5))))
+    cols = min(cols, n)
+    rows = -(-n // cols)
+    cw, ch = (w - gap * (cols + 1)) // cols, (h - gap * (rows + 1)) // rows
+    out = []
+    for i in range(n):
+        r, c = divmod(i, cols)
+        l, t = gap + c * (cw + gap), gap + r * (ch + gap)
+        out.append((l, t, l + cw, t + ch))
+    return out
+
+
+def display_size():
+    """Current display size (rotation included). Root. -> (w, h) or (0, 0)"""
+    _, o = sh("dumpsys window displays 2>/dev/null | grep -m1 -E 'cur=[0-9]+x[0-9]+'", root=True, timeout=15)
+    m = re.search(r"cur=(\d+)x(\d+)", o)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    _, o = sh("wm size", root=True, timeout=10)
+    m = re.findall(r"(\d+)x(\d+)", o)
+    return (int(m[-1][0]), int(m[-1][1])) if m else (0, 0)
+
+
+def parse_task_ids(out):
+    """dumpsys task lines -> {package: [task ids, top-most first]}"""
+    tasks = {}
+    for l in out.splitlines():
+        m, t = re.search(r"\bA=(?:\d+:)?([\w.]+)", l), re.search(r"#(\d+)", l)
+        if m and t:
+            ids = tasks.setdefault(m.group(1), [])
+            if t.group(1) not in ids:
+                ids.append(t.group(1))
+    return tasks
+
+
+def arrange_windows(cfg, pkgs):
+    """Tile the game windows of `pkgs` (in order) across the screen with `am task resize`. -> (ok, message)"""
+    if not ENV.root:
+        return False, "ต้องใช้สิทธิ์รูท"
+    a = cfg.d["arrange"]
+    w, h = display_size()
+    if not (w and h):
+        return False, "อ่านขนาดหน้าจอไม่ได้"
+    _, o = sh(r"dumpsys activity activities 2>/dev/null | grep -E '\* (Task|TaskRecord)\{'", root=True, timeout=40)
+    tasks = parse_task_ids(o)
+    present = [p for p in pkgs if tasks.get(p)]
+    if not present:
+        return False, "ไม่พบหน้าต่างของอินสแตนซ์ (เกมยังไม่เปิด?)"
+    rects = grid_rects(len(present), w, h, int(a["cols"]), int(a["gap"]))
+    am, done, bad = AM(), 0, []
+    for p, (l, t, r, b) in zip(present, rects):
+        tid = tasks[p][0]
+        sh("%s task resizeable %s 3 2>/dev/null" % (am, tid), root=True, timeout=15)
+        rc, out = sh("%s task resize %s %d %d %d %d 2>&1" % (am, tid, l, t, r, b), root=True, timeout=15)
+        if rc == 0 and not re.search(r"exception|error|unknown|not found|invalid", out, re.I):
+            done += 1
+        else:
+            bad.append(p)
+    cols = max(1, min(len(present), int(a["cols"]) or int(round((len(present) * w / float(h)) ** 0.5))))
+    msg = "%d ตัว (%d คอลัมน์) ขนาดจอ %dx%d" % (done, cols, w, h)
+    if bad:
+        msg += " | ไม่สำเร็จ: " + ", ".join(bad)
+    return done > 0, msg
 
 
 def screen_scan(cfg):
@@ -1584,7 +1655,7 @@ def sys_load():
         return None
 
 
-CONSOLE_HELP = ("คำสั่ง: rejoin <เลข|all> | pause <เลข|all> | resume <เลข|all> | status | ram | shot | clear | streamer | help | quit")
+CONSOLE_HELP = ("คำสั่ง: rejoin <เลข|all> | pause <เลข|all> | resume <เลข|all> | status | ram | shot | clear | arrange | streamer | help | quit")
 
 
 # ----------------------------------------------------------------- engine
@@ -1632,6 +1703,7 @@ class Engine:
         self.stop = threading.Event()
         self.gate = threading.Lock()
         self.last_launch = 0.0
+        self._arr_timer, self._arr_lock = None, threading.Lock()
         self.events = deque(maxlen=10)
         self._dlg_n = 0
         self._stack_seen, self._stack_last = {}, {}
@@ -1707,6 +1779,30 @@ class Engine:
                     self.report(pm)
                 except Exception as e:
                     self.event("ส่งรายงานสถานะไม่สำเร็จ: %s" % e, "red")
+
+    def _arrange_later(self):
+        """After a launch/rejoin: tile the windows once the new one has appeared (debounced; every launch restarts the wait)."""
+        a = self.cfg.d["arrange"]
+        if not (a["enabled"] and ENV.root):
+            return
+        with self._arr_lock:
+            if self._arr_timer:
+                self._arr_timer.cancel()
+            self._arr_timer = threading.Timer(max(3, int(a["settle_sec"])), self._arrange_fire)
+            self._arr_timer.daemon = True
+            self._arr_timer.start()
+
+    def _arrange_fire(self):
+        if self.stop.is_set():
+            return
+        try:
+            self.arrange_now("อัตโนมัติ")
+        except Exception as e:
+            self.event("เรียงหน้าต่างผิดพลาด: %s" % e, "red")
+
+    def arrange_now(self, why):
+        ok, msg = arrange_windows(self.cfg, [i.pkg for i in self.insts])
+        self.event("เรียงหน้าต่าง (%s): " % why + msg, "cyan" if ok else "yellow")
 
     def guard_tick(self):
         """Clear stacked/overlapping windows: error dialogs, duplicate tasks (debounced), stray apps on top."""
@@ -1804,7 +1900,7 @@ class Engine:
             STREAMER["on"] = self.cfg.d["ui"]["streamer_mode"] = on
             self.cfg.save()
             self.event("โหมดซ่อนชื่อบัญชี (streamer): " + ("เปิด" if on else "ปิด"), "cyan")
-        elif cmd in ("ram", "shot", "clear"):
+        elif cmd in ("ram", "shot", "clear", "arrange"):
             if not ENV.root:
                 self.event("คำสั่ง %s ต้องใช้รูท" % cmd, "red")
             else:
@@ -1817,6 +1913,8 @@ class Engine:
         try:
             if cmd == "ram":
                 self.clear_ram("คำสั่ง")
+            elif cmd == "arrange":
+                self.arrange_now("คำสั่ง")
             elif cmd == "clear":
                 self.event("ล้างหน้าจอ: " + ", ".join(screen_clear(self.cfg, screen_scan(self.cfg), force_all=True)), "yellow")
             else:
@@ -1861,6 +1959,7 @@ class Engine:
             ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"] or force)
             self.last_launch = time.time()
         inst.launched_at = time.time()
+        self._arrange_later()
         inst.pres_at = 0.0
         inst.dlg_hits = 0
         inst.state, inst.detail = "joining", "รอเข้าเกม"
@@ -2637,7 +2736,7 @@ def menu_heartbeat(cfg):
 
 
 def menu_screen(cfg):
-    d, g = cfg.d["dialog_detect"], cfg.d["screen_guard"]
+    d, g, a = cfg.d["dialog_detect"], cfg.d["screen_guard"], cfg.d["arrange"]
     while True:
         banner(cfg)
         t = Table(title="หน้าจอ: ตรวจ Disconnected / ล้างหน้าจอซ้อน", box=box.ROUNDED, header_style="bold cyan")
@@ -2652,7 +2751,10 @@ def menu_screen(cfg):
                 ("ปิดแอปแปลกปลอมที่ขึ้นทับหน้าจอ ⚠ (ยกเว้น Termux/ระบบ/หน้าหลัก)", onoff(g["kill_stray"])),
                 ("ทดสอบตรวจ Disconnected ตอนนี้ (ไม่ทำอะไร)", ""),
                 ("ตรวจหน้าจอซ้อนตอนนี้ (ไม่ทำอะไร)", ""),
-                ("ล้างหน้าจอเดี๋ยวนี้ (force)", "")]
+                ("ล้างหน้าจอเดี๋ยวนี้ (force)", ""),
+                ("เรียงหน้าต่างเกมอัตโนมัติทุกครั้งที่เปิด/รีจอย (ไม่ให้ซ้อนกัน)", onoff(a["enabled"])),
+                ("จำนวนคอลัมน์ (0=อัตโนมัติ, 0-6)", str(a["cols"])),
+                ("เรียงหน้าต่างเกมเดี๋ยวนี้", "")]
         for i, (label, val) in enumerate(rows, 1):
             t.add_row(str(i), label, val)
         console.print(t)
@@ -2677,6 +2779,22 @@ def menu_screen(cfg):
             elif v:
                 say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
                 pause()
+        elif c == "11":
+            a["enabled"] = not a["enabled"]
+        elif c == "12":
+            v = ask("ค่าใหม่ (0-6):")
+            if v.isdigit() and 0 <= int(v) <= 6:
+                a["cols"] = int(v)
+            elif v:
+                say("ค่าต้องอยู่ระหว่าง 0-6", "red")
+                pause()
+        elif c == "13":
+            if not ENV.root:
+                say("ต้องใช้รูท", "red")
+            else:
+                ok, msg = arrange_windows(cfg, selected_packages(cfg))
+                say(msg, "green" if ok else "yellow")
+            pause()
         elif c in ("8", "9", "10"):
             if not ENV.root:
                 say("ต้องใช้รูท", "red")
