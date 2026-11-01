@@ -164,6 +164,7 @@ DEFAULTS = {
     "check_interval": 30,
     "launch_delay": 15,
     "package_prefix": "com.roblox.",
+    "extra_prefixes": ["aya."],   # also scanned / protected / checked exactly like package_prefix
     "packages": [],          # empty = run every detected package
     "detected": [],
     "backoff_base": 10,
@@ -436,7 +437,7 @@ def kill_others(cfg):
         raise RuntimeError("cannot list processes")
     running = {p.split(":")[0] for p in snap["procs"]}
     # termux/root managers are ALWAYS protected, whatever the user types in the protect list
-    prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [cfg.d["package_prefix"].lower(),
+    prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [x.lower() for x in prefixes(cfg)] + [
                                                                       "termux", "magisk", "kernelsu", "supersu"])
     keep = set(cfg.d["detected"]) | set(cfg.d["screen_guard"]["keep"]) | {home_pkg()}
     victims = [p for p in sorted(third & running) if p not in keep and not any(x in p.lower() for x in prot)]
@@ -617,21 +618,21 @@ def home_pkg():
 
 def screen_scan(cfg):
     _, out = sh(GUARD_CMD, root=True, timeout=40)
-    return parse_guard(out, cfg.d["package_prefix"])
+    return parse_guard(out, prefixes(cfg))
 
 
 def stray_pkg(cfg, info):
     g, top = cfg.d["screen_guard"], info["top"]
     if not (g["kill_stray"] and top):
         return ""
-    if top.startswith(cfg.d["package_prefix"]) or top in g["keep"] or top == home_pkg():
+    if top.startswith(prefixes(cfg)) or top in g["keep"] or top == home_pkg():
         return ""
     return top
 
 
 def screen_clear(cfg, info, force_all=False):
     """Close system dialogs and force-stop apps causing stacked/overlapping windows. -> list of actions (Thai)."""
-    g, prefix, q = cfg.d["screen_guard"], cfg.d["package_prefix"], shlex.quote
+    g, prefix, q = cfg.d["screen_guard"], prefixes(cfg), shlex.quote
     sh(AM() + " broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS", root=True, timeout=20)
     acts = ["ปิดหน้าต่างระบบ"]
     for p in sorted(info["dialogs"]):
@@ -675,6 +676,12 @@ def wake_lock(on):
 
 
 # ----------------------------------------------------------------- packages / links
+def prefixes(cfg):
+    """package_prefix + extra_prefixes (e.g. 'aya.') as a tuple that str.startswith accepts."""
+    out = [cfg.d["package_prefix"]] + list(cfg.d.get("extra_prefixes") or [])
+    return tuple(dict.fromkeys(x.strip() for x in out if isinstance(x, str) and x.strip()))
+
+
 def scan_packages(prefix):
     out = ""
     for root in ((True, False) if ENV.root else (False,)):
@@ -692,7 +699,8 @@ def scan_packages(prefix):
             name = line.split(":", 1)[1].strip()
             if name.startswith(prefix):
                 pk.add(name)
-    return sorted(pk, key=lambda p: (p != "com.roblox.client", p))
+    main = prefix[0] if isinstance(prefix, tuple) else prefix   # main prefix first, so existing cookie order is kept
+    return sorted(pk, key=lambda p: (p != "com.roblox.client", not p.startswith(main), p))
 
 
 def parse_link(link):
@@ -2092,7 +2100,7 @@ def selected_packages(cfg):
 
 
 def refresh_packages(cfg):
-    found = scan_packages(cfg.d["package_prefix"])
+    found = scan_packages(prefixes(cfg))
     if found:
         cfg.d["detected"] = found
         cfg.d["packages"] = [p for p in cfg.d["packages"] if p in found]
@@ -2138,7 +2146,7 @@ def menu_start(cfg, hook):
     hc = cfg.d["heartbeat"]
     if hc["enabled"]:
         hb = Heartbeats()
-        hbs = HBServer(hb, hc["port"], cfg.d["package_prefix"])
+        hbs = HBServer(hb, hc["port"], prefixes(cfg))
         hb.single = len(insts) == 1
         try:
             hbs.start()
@@ -2245,7 +2253,7 @@ def menu_settings(cfg):
 
 
 def menu_scan(cfg):
-    say("กำลังสแกนแพ็กเกจ %s* ..." % cfg.d["package_prefix"], "cyan")
+    say("กำลังสแกนแพ็กเกจ %s ..." % ", ".join(p + "*" for p in prefixes(cfg)), "cyan")
     found = refresh_packages(cfg)
     if not found:
         say("ไม่พบแพ็กเกจ (ถ้าอินสแตนซ์ใช้ชื่ออื่น พิมพ์ชื่อแพ็กเกจเองได้ คั่นด้วยคอมมา)", "red")
