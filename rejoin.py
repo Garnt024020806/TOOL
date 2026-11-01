@@ -2404,6 +2404,19 @@ def show_social(rows):
     console.print(t)
 
 
+def pick_target(accts):
+    """Target of block/unblock/friend: one of the cookie accounts, or a typed username / ID (both kept). -> (id, name)"""
+    src = ask("เลือกเป้าหมายจาก: 1=บัญชีในคุกกี้, 2=พิมพ์ชื่อ/ID Roblox (Enter=1):").strip()
+    if src in ("", "1"):
+        v = ask("เลือกเลขบัญชีเป้าหมาย (ตามตารางด้านบน):").strip()
+        if v.isdigit() and 1 <= int(v) <= len(accts):
+            a = accts[int(v) - 1]
+            return a[2], a[3]
+        return None, None
+    who = ask("ชื่อผู้ใช้หรือ User ID เป้าหมาย:")
+    return resolve_user(accts[0][1], who) if who else (None, None)
+
+
 def menu_social(cfg):
     if not cookie_pairs(cfg)[0]:
         say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)", "red")
@@ -2433,10 +2446,9 @@ def menu_social(cfg):
             return
         if c in ("1", "2", "3"):
             action = {"1": "block", "2": "unblock", "3": "friend"}[c]
-            who = ask("ชื่อผู้ใช้หรือ User ID เป้าหมาย:")
-            tid, tname = resolve_user(accts[0][1], who) if who else (None, None)
+            tid, tname = pick_target(accts)
             if not tid:
-                say("ไม่พบผู้ใช้นี้", "red")
+                say("ไม่พบเป้าหมายนี้", "red")
                 pause()
                 continue
             sel = pick_accounts(accts)
