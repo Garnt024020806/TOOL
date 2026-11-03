@@ -163,6 +163,8 @@ DEFAULTS = {
     "game_link": "",
     "check_interval": 30,
     "launch_delay": 15,
+    "block_gap_sec": 20,   # social menu item 6: min seconds between two blocks from the SAME account (Roblox ~3/min per cookie)
+    "open_all_delay": 10,   # social menu item 5: seconds between opening each Roblox instance
     "package_prefix": "com.roblox.",
     "extra_prefixes": ["aya."],   # also scanned / protected / checked exactly like package_prefix
     "packages": [],          # empty = run every detected package
@@ -2415,17 +2417,22 @@ def menu_cookie(cfg):
 
 def api_post(s, url, body=None):
     """POST with CSRF retry -> (ok, message)"""
+    retried = False
     try:
+        if "apis.roblox.com" in url:
+            s.headers.setdefault("Origin", "https://www.roblox.com")
+            s.headers.setdefault("Referer", "https://www.roblox.com/")
         r = s.post(url, json=body, timeout=15)
         if r.status_code == 403 and "x-csrf-token" in r.headers:
             s.headers["X-CSRF-TOKEN"] = r.headers["x-csrf-token"]
             r = s.post(url, json=body, timeout=15)
+            retried = True
     except Exception as e:
         return False, scrub(e)[:80]
     msg = ""
     try:
         j = r.json()
-        msg = (j.get("errors") or [{}])[0].get("message", "")
+        msg = (j.get("errors") or [{}])[0].get("message", "") or j.get("message", "")
         if r.status_code == 200 and j.get("success") is False:
             return False, msg or "success=false"
     except Exception:
@@ -2436,6 +2443,11 @@ def api_post(s, url, body=None):
         msg = "คุกกี้หมดอายุ"
     elif r.status_code == 429:
         msg = "ส่งถี่เกินไป รอสักพัก"
+    if not msg and r.status_code not in (401, 429):
+        msg = scrub(" ".join((r.text or "").split()))[:70] or "(เนื้อหาตอบกลับว่าง)"
+    if r.status_code == 403:
+        msg += " [csrf: " + ("ส่งโทเคนซ้ำแล้วยังไม่ผ่าน" if retried else
+                             "เซิร์ฟเวอร์ไม่ส่งโทเคนมา") + "]"
     return False, ("HTTP %d %s" % (r.status_code, msg)).strip()
 
 
@@ -2461,11 +2473,81 @@ def resolve_user(s, text):
     return None, None
 
 
-SOCIAL_URL = {"block": "https://accountsettings.roblox.com/v1/users/%d/block",
-              "unblock": "https://accountsettings.roblox.com/v1/users/%d/unblock",
+SOCIAL_URL = {"block": "https://apis.roblox.com/user-blocking-api/v1/users/%d/block-user",
+              "unblock": "https://apis.roblox.com/user-blocking-api/v1/users/%d/unblock-user",
               "friend": "https://friends.roblox.com/v1/users/%d/request-friendship",
               "accept": "https://friends.roblox.com/v1/users/%d/accept-friend-request"}
 SOCIAL_NAME = {"block": "บล็อก", "unblock": "เลิกบล็อก", "friend": "ส่งคำขอเป็นเพื่อน"}
+
+SOCIAL_LEGACY = {"block": "https://accountsettings.roblox.com/v1/users/%d/block",
+                 "unblock": "https://accountsettings.roblox.com/v1/users/%d/unblock"}
+
+
+def ensure_tracker(s, uid=0, force_fake=False):
+    """ให้เซสชันมีคุกกี้ RBXEventTrackerV2 (browserid) ที่ apis.roblox.com ใช้เป็น BrowserTrackerID: ขอจากเซิร์ฟเวอร์ก่อน ไม่ได้ก็สร้างเอง"""
+    if not force_fake:
+        if any(c.name == "RBXEventTrackerV2" for c in s.cookies):
+            return
+        if not getattr(s, "_garnt_home", False):
+            s._garnt_home = True
+            try:
+                s.get("https://www.roblox.com/home", timeout=15)
+            except Exception:
+                pass
+            if any(c.name == "RBXEventTrackerV2" for c in s.cookies):
+                return
+    import random
+    now = datetime.now()
+    val = "CreateDate=%d/%d/%d %d:%02d:%02d %s&rbxid=%d&browserid=%d" % (
+        now.month, now.day, now.year, now.hour % 12 or 12, now.minute, now.second,
+        "AM" if now.hour < 12 else "PM", int(uid or 0), random.randint(10 ** 10, 10 ** 11 - 1))
+    s.cookies.set("RBXEventTrackerV2", val, domain=".roblox.com", path="/")
+
+
+def is_blocking(s, tid):
+    """True/False/None(ไม่ทราบ): บัญชีนี้มี tid อยู่ในรายการที่บล็อกไว้หรือไม่"""
+    cursor = ""
+    try:
+        for _ in range(10):
+            r = s.get("https://apis.roblox.com/user-blocking-api/v1/users/get-blocked-users",
+                      params={"cursor": cursor, "count": 50}, timeout=15)
+            if r.status_code != 200:
+                return None
+            d = (r.json() or {}).get("data") or {}
+            if int(tid) in [int(x) for x in (d.get("blockedUserIds") or [])]:
+                return True
+            cursor = d.get("cursor") or ""
+            if not cursor:
+                return False
+    except Exception:
+        return None
+    return None
+
+
+def social_call(s, action, tid, uid=0):
+    """บล็อก/เลิกบล็อก/เพื่อน -> (ok, ข้อความ) ใช้ user-blocking-api ก่อน ถ้าได้ 404 ค่อยลอง URL เก่า"""
+    body = {} if action != "friend" else None
+    web = "apis.roblox.com" in SOCIAL_URL[action]
+    if web:
+        ensure_tracker(s, uid)
+    ok, msg = api_post(s, SOCIAL_URL[action] % tid, body)
+    if web and not ok and "BrowserTrackerID" in msg:
+        ensure_tracker(s, uid, force_fake=True)
+        ok, msg = api_post(s, SOCIAL_URL[action] % tid, body)
+    if web and not ok and msg.startswith("HTTP 400") and action in ("block", "unblock"):
+        st = is_blocking(s, tid)
+        if st is True and action == "block":
+            return True, "บล็อกอยู่แล้ว (ตรวจจากรายการบล็อก)"
+        if st is False and action == "unblock":
+            return True, "ไม่ได้บล็อกอยู่ ไม่ต้องทำอะไร"
+        if st is not None:
+            msg += " [ตรวจรายการบล็อกแล้ว: " + ("บล็อกอยู่" if st else "ไม่ได้บล็อก") + "]"
+    if not ok and msg.startswith("HTTP 404") and action in SOCIAL_LEGACY:
+        ok2, msg2 = api_post(s, SOCIAL_LEGACY[action] % tid, body)
+        if ok2:
+            return True, msg2
+        msg += " / " + msg2
+    return ok, msg
 
 
 def social_accounts(cfg):
@@ -2496,7 +2578,7 @@ def run_social(action, accts, tid):
         if uid == tid:
             rows.append((pkg, name, False, "เป็นบัญชีเดียวกับเป้าหมาย ข้าม"))
             continue
-        ok, msg = api_post(s, SOCIAL_URL[action] % tid, {} if action != "friend" else None)
+        ok, msg = social_call(s, action, tid, uid)
         rows.append((pkg, name, ok, msg))
         time.sleep(1.5)     # stay under the rate limit
     return rows
@@ -2524,6 +2606,203 @@ def pick_target(accts):
     return resolve_user(accts[0][1], who) if who else (None, None)
 
 
+def blocked_ids(s):
+    """ชุด User ID ที่บัญชีนี้บล็อกไว้ หรือ None ถ้าอ่านไม่ได้"""
+    out, cursor = set(), ""
+    try:
+        for _ in range(40):
+            r = s.get("https://apis.roblox.com/user-blocking-api/v1/users/get-blocked-users",
+                      params={"cursor": cursor, "count": 50}, timeout=15)
+            if r.status_code != 200:
+                return None
+            d = (r.json() or {}).get("data") or {}
+            out.update(int(x) for x in (d.get("blockedUserIds") or []))
+            cursor = d.get("cursor") or ""
+            if not cursor:
+                return out
+    except Exception:
+        return None
+    return out
+
+
+def block_each_other(cfg, accts):
+    """ทุกบัญชีในคุกกี้บล็อกกันเองทุกคู่ (ทั้งสองทิศ) ไม่ต้องเลือกเป้าหมาย"""
+    seen = set()
+    accts = [a for a in accts if not (a[2] in seen or seen.add(a[2]))]   # คุกกี้สองตัวของบัญชีเดียวกัน นับครั้งเดียว
+    n = len(accts)
+    if n < 2:
+        say("ต้องมีบัญชีที่ใช้ได้อย่างน้อย 2 บัญชี", "red")
+        return pause()
+    try:
+        gap = max(0, int(cfg.d.get("block_gap_sec", 20)))
+    except (TypeError, ValueError):
+        gap = 20
+    est = max(1, int(round((n - 1) * max(gap, n * 1.0) / 60.0)))
+    if not confirm("บล็อกกันเอง %d บัญชี (%d การบล็อก) ใช้เวลาประมาณ %d นาที?" % (n, n * (n - 1), est)):
+        return
+    say("กำลังอ่านรายการบล็อกของแต่ละบัญชี...", "dim")
+    have = []
+    for pkg, s, uid, name in accts:
+        ensure_tracker(s, uid)
+        have.append(blocked_ids(s))
+    stats = [[0, 0, 0] for _ in accts]      # newly blocked, already blocked, failed
+    fails, last = [], [0.0] * n
+    try:
+        for k in range(1, n):
+            say("รอบ %d/%d" % (k, n - 1), "bold")
+            for i in range(n):
+                j = (i + k) % n
+                pkg, s, uid, name = accts[i]
+                tpkg, _, tuid, tname = accts[j]
+                if uid == tuid:
+                    continue
+                if have[i] is not None and tuid in have[i]:
+                    stats[i][1] += 1
+                    continue
+                for attempt in range(3):
+                    wait = last[i] + gap - time.time()
+                    if wait > 0:
+                        time.sleep(wait)
+                    ok, msg = social_call(s, "block", tuid, uid)
+                    last[i] = time.time()
+                    if ok or not msg.startswith("HTTP 429") or attempt == 2:
+                        break
+                    say("%s: ส่งถี่เกิน (429) รอ 60 วินาทีแล้วลองใหม่" % pkg, "yellow")
+                    time.sleep(60)
+                say("  %s → %s: %s" % (pkg, hide_name(tname), ("✓ " if ok else "✗ ") + msg), "green" if ok else "red")
+                if ok:
+                    stats[i][0] += 1
+                else:
+                    stats[i][2] += 1
+                    fails.append((pkg, tname, msg))
+                time.sleep(1)
+    except KeyboardInterrupt:
+        say("หยุดแล้ว (Ctrl+C) สรุปเท่าที่ทำไปแล้ว", "yellow")
+    t = Table(box=box.ROUNDED, header_style="bold cyan")
+    for col in ("แพ็กเกจ", "บัญชี", "ผล"):
+        t.add_column(col)
+    for (pkg, _, _, name), (a, b, c) in zip(accts, stats):
+        t.add_row(pkg, hide_name(name), Text("บล็อกใหม่ %d | บล็อกอยู่แล้ว %d | ล้ม %d" % (a, b, c),
+                                             style="green" if c == 0 else "red"))
+    console.print(t)
+    for pkg, tname, msg in fails[:8]:
+        say("%s → %s: %s" % (pkg, hide_name(tname), msg), "red")
+    if len(fails) > 8:
+        say("...และอีก %d รายการ" % (len(fails) - 8), "red")
+    pause()
+
+
+def unblock_each_other(cfg, accts):
+    """ทุกบัญชีในคุกกี้ปลดบล็อกกันเอง (เฉพาะคู่ที่บล็อกกันอยู่จริง) ไม่แตะรายการบล็อกอื่น"""
+    seen = set()
+    accts = [a for a in accts if not (a[2] in seen or seen.add(a[2]))]   # คุกกี้สองตัวของบัญชีเดียวกัน นับครั้งเดียว
+    n = len(accts)
+    if n < 2:
+        say("ต้องมีบัญชีที่ใช้ได้อย่างน้อย 2 บัญชี", "red")
+        return pause()
+    try:
+        gap = max(0, int(cfg.d.get("block_gap_sec", 20)))
+    except (TypeError, ValueError):
+        gap = 20
+    say("กำลังอ่านรายการบล็อกของแต่ละบัญชี...", "dim")
+    have = []
+    for pkg, s, uid, name in accts:
+        ensure_tracker(s, uid)
+        have.append(blocked_ids(s))
+
+    def todo(i, j):
+        return accts[i][2] != accts[j][2] and (have[i] is None or accts[j][2] in have[i])
+
+    per = [sum(1 for j in range(n) if todo(i, j)) for i in range(n)]
+    total = sum(per)
+    if not total:
+        say("ไม่มีคู่ไหนบล็อกกันอยู่ ไม่ต้องทำอะไร", "green")
+        return pause()
+    est = max(1, int(round(max(per) * gap / 60.0)))
+    if not confirm("ปลดบล็อกกันเอง %d คู่ (ทิศทาง) ใช้เวลาประมาณ %d นาที?" % (total, est)):
+        return
+    stats = [[0, n - 1 - per[i], 0] for i in range(n)]      # unblocked, not blocked (skipped), failed
+    fails, last = [], [0.0] * n
+    try:
+        for k in range(1, n):
+            if not any(todo(i, (i + k) % n) for i in range(n)):
+                continue
+            say("รอบ %d/%d" % (k, n - 1), "bold")
+            for i in range(n):
+                j = (i + k) % n
+                if not todo(i, j):
+                    continue
+                pkg, s, uid, name = accts[i]
+                tpkg, _, tuid, tname = accts[j]
+                for attempt in range(3):
+                    wait = last[i] + gap - time.time()
+                    if wait > 0:
+                        time.sleep(wait)
+                    ok, msg = social_call(s, "unblock", tuid, uid)
+                    last[i] = time.time()
+                    if ok or not msg.startswith("HTTP 429") or attempt == 2:
+                        break
+                    say("%s: ส่งถี่เกิน (429) รอ 60 วินาทีแล้วลองใหม่" % pkg, "yellow")
+                    time.sleep(60)
+                say("  %s → %s: %s" % (pkg, hide_name(tname), ("✓ " if ok else "✗ ") + msg), "green" if ok else "red")
+                if ok:
+                    stats[i][0] += 1
+                else:
+                    stats[i][2] += 1
+                    fails.append((pkg, tname, msg))
+                time.sleep(1)
+    except KeyboardInterrupt:
+        say("หยุดแล้ว (Ctrl+C) สรุปเท่าที่ทำไปแล้ว", "yellow")
+    t = Table(box=box.ROUNDED, header_style="bold cyan")
+    for col in ("แพ็กเกจ", "บัญชี", "ผล"):
+        t.add_column(col)
+    for (pkg, _, _, name), (a, b, c) in zip(accts, stats):
+        t.add_row(pkg, hide_name(name), Text("ปลดบล็อก %d | ไม่ได้บล็อกอยู่ %d | ล้ม %d" % (a, b, c),
+                                             style="green" if c == 0 else "red"))
+    console.print(t)
+    for pkg, tname, msg in fails[:8]:
+        say("%s → %s: %s" % (pkg, hide_name(tname), msg), "red")
+    if len(fails) > 8:
+        say("...และอีก %d รายการ" % (len(fails) - 8), "red")
+    pause()
+
+
+def launch_all_roblox(cfg):
+    """เปิด Roblox ทุกอินสแตนซ์ที่เลือกทีละตัว หน่วง open_all_delay วินาที (ค่าเริ่มต้น 10) ระหว่างตัว"""
+    pkgs = selected_packages(cfg)
+    if not pkgs:
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
+        return pause()
+    try:
+        delay = max(0, int(cfg.d.get("open_all_delay", 10)))
+    except (TypeError, ValueError):
+        delay = 10
+    parsed = parse_link(cfg.d["game_link"])
+    uri = parsed[0] if parsed else None
+    say("จะเปิดเกมตามลิงก์ที่ตั้งไว้" if uri else
+        "ยังไม่ได้ตั้งลิงก์เกม จะเปิดแค่แอป Roblox", "dim")
+    if not confirm("เปิด Roblox %d อินสแตนซ์ ห่างกันตัวละ %d วินาที?" % (len(pkgs), delay)):
+        return
+    done = 0
+    try:
+        for i, pkg in enumerate(pkgs, 1):
+            if uri:
+                ok, msg = open_game(pkg, uri, False)
+            else:
+                rc, out = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % shlex.quote(pkg),
+                             root=ENV.root, timeout=30)
+                ok, msg = rc == 0, (scrub(out.strip()[:120]) or "ok")
+            done += 1 if ok else 0
+            say("[%d/%d] %s: %s" % (i, len(pkgs), pkg, msg), "green" if ok else "red")
+            if i < len(pkgs) and delay:
+                say("รอ %d วินาทีก่อนเปิดตัวถัดไป..." % delay, "dim")
+                time.sleep(delay)
+    except KeyboardInterrupt:
+        say("หยุดแล้ว (Ctrl+C)", "yellow")
+    say("เปิดสำเร็จ %d/%d อินสแตนซ์" % (done, len(pkgs)), "green" if done == len(pkgs) else "yellow")
+    pause()
+
+
 def menu_social(cfg):
     if not cookie_pairs(cfg)[0]:
         say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)", "red")
@@ -2541,6 +2820,9 @@ def menu_social(cfg):
         t.add_row("2", "เลิกบล็อกผู้ใช้")
         t.add_row("3", "เพิ่มเพื่อน (ส่งคำขอไปยังผู้ใช้)")
         t.add_row("4", "เพิ่มเพื่อนระหว่างบัญชีของเราเอง (ส่งคำขอ + กดรับให้อัตโนมัติ)")
+        t.add_row("5", "เปิด Roblox ทั้งหมด (หน่วง %ds ต่อตัว)" % int(cfg.d.get("open_all_delay", 10)))
+        t.add_row("6", "บล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้บล็อกกันเอง ไม่ต้องเลือกเป้าหมาย)")
+        t.add_row("7", "ปลดบล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้ปลดบล็อกกันเอง เฉพาะคู่ที่บล็อกกันอยู่)")
         console.print(t)
         a = Table(box=box.SIMPLE, header_style="bold cyan")
         for col in ("#", "แพ็กเกจ", "บัญชี"):
@@ -2562,6 +2844,12 @@ def menu_social(cfg):
             if sel and confirm("%s %s (%d) ด้วย %d บัญชี?" % (SOCIAL_NAME[action], hide_name(tname), tid, len(sel))):
                 show_social(run_social(action, sel, tid))
                 pause()
+        elif c == "7":
+            unblock_each_other(cfg, accts)
+        elif c == "6":
+            block_each_other(cfg, accts)
+        elif c == "5":
+            launch_all_roblox(cfg)
         elif c == "4":
             sel = pick_accounts(accts)
             if len(sel) < 2:
