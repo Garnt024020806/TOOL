@@ -25,11 +25,48 @@ local lp = Players.LocalPlayer
 while not lp do task.wait(1); lp = Players.LocalPlayer end
 
 -- FPS cap: ดู UserId ของบัญชีที่กำลังเล่นอยู่ แล้วตั้งเพดานตามที่ตั้งไว้ (ต้องมี setfpscap ในเอ็กซิคิวเตอร์)
+-- capInfo ถูกส่งไปกับ heartbeat (cap=) และแสดงในคอนโซล: off=ไม่ได้ตั้งให้ ID นี้ nofn=ไม่มีฟังก์ชัน err=เรียกแล้ว error
+--   ignNN=เรียกแล้วแต่อ่านกลับได้ NN flagNN=ใช้ FFlag สำรอง setNN=ตั้งแล้ว
+local capInfo = "off"
+
+local function findCapFn()
+    if setfpscap then return setfpscap end
+    if set_fps_cap then return set_fps_cap end
+    if setfpslimit then return setfpslimit end
+    local envs = { _G }
+    if getgenv then table.insert(envs, 1, getgenv()) end
+    for _, env in ipairs(envs) do
+        for _, n in ipairs({ "setfpscap", "set_fps_cap", "setfpslimit" }) do
+            local ok, f = pcall(function() return env[n] end)
+            if ok and type(f) == "function" then return f end
+        end
+    end
+    local ok, f = pcall(function() return syn and syn.set_fps_cap end)
+    if ok and type(f) == "function" then return f end
+    return nil
+end
+
 local function applyCap()
     local cap = CAPS[lp.UserId] or DEFAULT_CAP
-    if type(cap) ~= "number" or cap <= 0 then return end
-    local fn = setfpscap or set_fps_cap or (getgenv and getgenv().setfpscap)
-    if fn then pcall(fn, cap) end
+    if type(cap) ~= "number" or cap <= 0 then capInfo = "off"; return end
+    local fn = findCapFn()
+    if fn then
+        if not pcall(fn, cap) then capInfo = "err"; return end
+        local back
+        if getfpscap then
+            local ok, v = pcall(getfpscap)
+            if ok and type(v) == "number" then back = math.floor(v + 0.5) end
+        end
+        capInfo = (back and back ~= cap) and ("ign" .. tostring(back)) or ("set" .. tostring(cap))
+        return
+    end
+    -- ฟังก์ชันสำรอง: setfflag (ไม่ยืนยันว่าได้ผลในทุกเอ็กซิคิวเตอร์)
+    if setfflag then
+        local ok = pcall(setfflag, "DFIntTaskSchedulerTargetFps", tostring(cap))
+        capInfo = ok and ("flag" .. tostring(cap)) or "nofn"
+        return
+    end
+    capInfo = "nofn"
 end
 pcall(applyCap)
 
@@ -67,6 +104,7 @@ local function beat()
         HttpService:UrlEncode(game.JobId), fps)
     local err = errorText()                          -- ขึ้นหน้าต่าง Disconnected: ส่งข้อความ error ทันที
     if err then url = url .. "&err=" .. HttpService:UrlEncode(string.sub(err, 1, 120)) end
+    url = url .. "&cap=" .. capInfo
     httpGet(url)
 end
 
