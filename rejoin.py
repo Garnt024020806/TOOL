@@ -46,7 +46,8 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.6"
+VERSION = "1.7"
+FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
   ____    _    ____  _   _ _____
@@ -131,6 +132,14 @@ def hide_name(name):
     return name[:4] + "#" * (len(name) - 4)
 
 
+def hide_id(uid):
+    """Roblox user ID on screen: first 3 digits stay visible in streamer mode."""
+    uid = str(uid or "")
+    if not STREAMER["on"] or len(uid) <= 3:
+        return uid
+    return uid[:3] + "#" * (len(uid) - 3)
+
+
 def hide_users(text):
     if not STREAMER["on"]:
         return text
@@ -163,8 +172,8 @@ DEFAULTS = {
     "game_link": "",
     "check_interval": 30,
     "launch_delay": 15,
-    "block_gap_sec": 20,   # social menu item 6: min seconds between two blocks from the SAME account (Roblox ~3/min per cookie)
-    "open_all_delay": 10,   # social menu item 5: seconds between opening each Roblox instance
+    "block_gap_sec": 20,   # social menu item 5: min seconds between two blocks from the SAME account (Roblox ~3/min per cookie)
+    "open_all_delay": 10,   # main menu 9: seconds between opening each Roblox instance
     "package_prefix": "com.roblox.",
     "extra_prefixes": ["aya."],   # also scanned / protected / checked exactly like package_prefix
     "packages": [],          # empty = run every detected package
@@ -184,7 +193,8 @@ DEFAULTS = {
         "presence_check": True,
         "timed_rejoin_min": 0,
     },
-    "heartbeat": {"enabled": True, "port": 8765, "interval": 15, "timeout": 90, "show_fps": True},
+    "heartbeat": {"enabled": True, "port": 8765, "interval": 15, "timeout": 90, "show_fps": True,
+                  "fps_cap": {"default": 0, "accounts": {}}},   # accounts: {"<Roblox UserId>": {"name": ..., "cap": N}}; default 0 = leave FPS alone
     "autoexec": {"auto_create": True, "enabled_once": False, "filename": "heartbeat.lua",
                  "dirs": ["/storage/emulated/0/Delta/Autoexecute"]},   # {pkg} in a path = one folder per clone
     "performance": {"low_cpu": True, "ui_refresh_sec": 2},
@@ -1153,7 +1163,11 @@ LUA_TEMPLATE = r"""-- GARNT TOOL REJOIN heartbeat (auto-generated)
 local HOST     = "http://127.0.0.1:__PORT__"
 local ID       = "__ID__"       -- ชื่อแพ็กเกจหรือเลขอินสแตนซ์ ต้องตรงกับในเครื่องมือ
 local INTERVAL = __INTERVAL__   -- ส่งทุกกี่วินาที
-local SHOW_FPS = __SHOWFPS__    -- true = แสดงกล่อง FPS บนจอ (ลากย้ายได้)
+local SHOW_FPS = __SHOWFPS__    -- true = แสดงตัวเลข FPS บนจอ (ลากย้ายได้)
+local DEFAULT_CAP = __DEFCAP__  -- FPS cap ของบัญชีที่ไม่อยู่ในรายการ (0 = ไม่แตะ)
+local CAPS = {                  -- FPS cap ต่อบัญชี: [Roblox UserId] = FPS (ตั้งจากเมนูในเครื่องมือ)
+__CAPS__
+}
 
 if getgenv then
     if getgenv().__GARNT_HB then return end
@@ -1169,6 +1183,15 @@ local UserInputService = game:GetService("UserInputService")
 
 local lp = Players.LocalPlayer
 while not lp do task.wait(1); lp = Players.LocalPlayer end
+
+-- FPS cap: ดู UserId ของบัญชีที่กำลังเล่นอยู่ แล้วตั้งเพดานตามที่ตั้งไว้ (ต้องมี setfpscap ในเอ็กซิคิวเตอร์)
+local function applyCap()
+    local cap = CAPS[lp.UserId] or DEFAULT_CAP
+    if type(cap) ~= "number" or cap <= 0 then return end
+    local fn = setfpscap or set_fps_cap or (getgenv and getgenv().setfpscap)
+    if fn then pcall(fn, cap) end
+end
+pcall(applyCap)
 
 local lastFrame = os.clock()
 local frames, fps, winStart = 0, 0, os.clock()
@@ -1211,12 +1234,14 @@ pcall(function() GuiService.ErrorMessageChanged:Connect(function() pcall(beat) e
 
 task.spawn(function()
     while true do
+        pcall(applyCap)                              -- ตั้งซ้ำทุกรอบ เผื่อเกม/เอ็กซิคิวเตอร์รีเซ็ตค่า
         pcall(beat)
         task.wait(INTERVAL)
     end
 end)
 
--- กล่อง FPS: พื้นดำ กรอบขาว ลากไปวางที่ไหนก็ได้ (จำตำแหน่งไว้ถ้าเอ็กซิคิวเตอร์รองรับ writefile)
+-- ตัวเลข FPS: ไม่มีกรอบ ฟอนต์กลม ขนาดปรับตามความกว้างจออัตโนมัติ ลากไปวางที่ไหนก็ได้
+-- (จำตำแหน่งไว้ถ้าเอ็กซิคิวเตอร์รองรับ writefile)
 local POS_FILE = "garnt_fps_pos.txt"
 
 local function parentGui(gui)
@@ -1246,6 +1271,14 @@ local function savePos(x, y)
     if writefile then pcall(writefile, POS_FILE, string.format("%d,%d", x, y)) end
 end
 
+local function roundFont()
+    for _, name in ipairs({ "FredokaOne", "Nunito", "GothamBold" }) do   -- ตัวกลมก่อน ถ้าไม่มีค่อยถอยไปตัวถัดไป
+        local ok, f = pcall(function() return Enum.Font[name] end)
+        if ok and f then return f end
+    end
+    return Enum.Font.SourceSansBold
+end
+
 local function buildFpsBox()
     local gui = Instance.new("ScreenGui")
     gui.Name = "GARNT_FPS"
@@ -1254,45 +1287,63 @@ local function buildFpsBox()
     gui.DisplayOrder = 999999
     if not parentGui(gui) then return end
 
-    local W, H = 104, 34
     local box = Instance.new("Frame")
     box.Name = "Box"
-    box.Size = UDim2.fromOffset(W, H)
-    box.BackgroundColor3 = Color3.fromRGB(0, 0, 0)       -- พื้นดำ
-    box.BackgroundTransparency = 0
+    box.BackgroundColor3 = Color3.fromRGB(0, 0, 0)       -- พื้นดำ ไม่มีกรอบ
+    box.BackgroundTransparency = 0.25
     box.BorderSizePixel = 0
     box.Active = true
     box.Parent = gui
 
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
+    corner.CornerRadius = UDim.new(1, 0)                 -- ขอบมนเต็มที่
     corner.Parent = box
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(255, 255, 255)         -- กรอบขาว
-    stroke.Thickness = 2
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Parent = box
 
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
     label.Size = UDim2.new(1, 0, 1, 0)
-    label.Font = Enum.Font.GothamMedium
-    label.TextSize = 18
+    label.Font = roundFont()
+    label.TextScaled = true
     label.TextColor3 = Color3.fromRGB(255, 255, 255)
     label.Text = "FPS --"
     label.Parent = box
 
-    local function clamp(x, y)
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0.12, 0)
+    pad.PaddingRight = UDim.new(0.12, 0)
+    pad.PaddingTop = UDim.new(0.14, 0)
+    pad.PaddingBottom = UDim.new(0.14, 0)
+    pad.Parent = label
+
+    local W, H = 72, 28
+    local function viewport()
         local cam = workspace.CurrentCamera
-        local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+        return (cam and cam.ViewportSize) or Vector2.new(800, 600)
+    end
+
+    local function clamp(x, y)
+        local vp = viewport()
         return math.clamp(x, 0, math.max(0, vp.X - W)), math.clamp(y, 0, math.max(0, vp.Y - H))
+    end
+
+    local function layout()                              -- ขนาดตามความกว้างจอ: เล็กกระทัดรัดแต่ยังอ่านออก
+        local vp = viewport()
+        W = math.clamp(math.floor(vp.X * 0.055), 56, 110)
+        H = math.floor(W * 0.4)
+        box.Size = UDim2.fromOffset(W, H)
+        local x, y = clamp(box.Position.X.Offset, box.Position.Y.Offset)
+        box.Position = UDim2.fromOffset(x, y)
     end
 
     local sx, sy = loadPos()
     if not sx then sx, sy = 12, 64 end
-    sx, sy = clamp(sx, sy)
     box.Position = UDim2.fromOffset(sx, sy)
+    layout()
+
+    local cam = workspace.CurrentCamera
+    if cam then
+        cam:GetPropertyChangedSignal("ViewportSize"):Connect(function() pcall(layout) end)   -- หมุนจอ/ย่อขยายหน้าต่าง
+    end
 
     local dragging, dragStart, startX, startY = false, nil, 0, 0
     box.InputBegan:Connect(function(input)
@@ -1330,9 +1381,30 @@ end
 """
 
 
-def render_lua(inst_id, port, interval, show_fps=True):
+def fps_caps(cfg):
+    """-> (default_cap, {uid: cap}) from config; invalid entries are dropped."""
+    fc = cfg.d["heartbeat"].get("fps_cap", {})
+    try:
+        default = max(0, min(int(fc.get("default", 0)), FPS_CAP_MAX))
+    except (TypeError, ValueError):
+        default = 0
+    caps = {}
+    for uid, rec in (fc.get("accounts") or {}).items():
+        try:
+            cap = int(rec.get("cap", 0) if isinstance(rec, dict) else rec)
+            if str(uid).isdigit() and FPS_CAP_MIN <= cap <= FPS_CAP_MAX:
+                caps[int(uid)] = cap
+        except (TypeError, ValueError):
+            continue
+    return default, caps
+
+
+def render_lua(inst_id, port, interval, show_fps=True, default_cap=0, caps=None):
+    rows = ",\n".join("    [%d] = %d" % (u, c) for u, c in sorted((caps or {}).items()))
     return (LUA_TEMPLATE.replace("__PORT__", str(int(port))).replace("__INTERVAL__", str(int(interval)))
             .replace("__SHOWFPS__", "true" if show_fps else "false")
+            .replace("__DEFCAP__", str(int(default_cap)))
+            .replace("__CAPS__", rows + ("," if rows else ""))
             .replace("__ID__", re.sub(r"[^\w.\-]", "", str(inst_id))))
 
 
@@ -1345,7 +1417,7 @@ def write_heartbeat_files(cfg):
     for i, pkg in enumerate(det, 1):
         p = os.path.join(d, "heartbeat_%d_%s.lua" % (i, pkg.split(".")[-1]))
         with open(p, "w", encoding="utf-8") as f:
-            f.write(render_lua(pkg, h["port"], h["interval"], h.get("show_fps", True)))
+            f.write(render_lua(pkg, h["port"], h["interval"], h.get("show_fps", True), *fps_caps(cfg)))
         paths.append(p)
     return paths
 
@@ -1397,7 +1469,7 @@ def install_autoexec(cfg):
     res = []
     for d, ident in autoexec_targets(cfg):
         path = os.path.join(d, a["filename"])
-        src = render_lua(ident, h["port"], h["interval"], h.get("show_fps", True))
+        src = render_lua(ident, h["port"], h["interval"], h.get("show_fps", True), *fps_caps(cfg))
         try:
             old = None
             if os.path.exists(path):
@@ -1684,7 +1756,7 @@ REASON = {"dead": "แอปปิด/ค้าง (ไม่พบโปรเ�
           "noheartbeat": "ไม่มี heartbeat จากสคริปต์ในเกม",
           "disconnected": "พบหน้าต่าง Disconnected (เช่น Error Code 277)",
           "notingame": "ไม่ได้อยู่ในเกม", "timed": "รีจอยตามเวลาที่ตั้งไว้"}
-STATE_TH = {"queued": ("รอคิวเปิด", "dim"), "launching": ("กำลังเปิดแอป", "cyan"),
+STATE_LABEL = {"queued": ("รอคิวเปิด", "dim"), "launching": ("กำลังเปิดแอป", "cyan"),
             "joining": ("กำลังเข้าเกม", "yellow"), "ok": ("ปกติ", "bold green"),
             "unknown": ("ไม่ทราบสถานะ", "magenta"), "backoff": ("รอรีจอย", "bold red"),
             "stopped": ("หยุดแล้ว", "dim"), "paused": ("หยุดชั่วคราว", "yellow")}
@@ -1845,7 +1917,7 @@ class Engine:
         if shot is None and minutes is not None and ENV.root and w["send_screenshot"]:
             shot = take_shot("status")
         mem = mem_available_mb()
-        fields = [(i.label, "%s | รีจอย %d | ล้มเหลว %d%s" % (STATE_TH.get(i.state, (i.state,))[0], i.rejoins, i.fails,
+        fields = [(i.label, "%s | รีจอย %d | ล้มเหลว %d%s" % (STATE_LABEL.get(i.state, (i.state,))[0], i.rejoins, i.fails,
                                                               (" | " + i.user) if i.user else "") + self._fps_txt(i)) for i in self.insts][:22]
         fields.append(("RAM ว่าง", ("%d MB" % mem) if mem is not None else "-"))
         fields.append(("รันมาแล้ว", fmt_dur(time.time() - self.t0)))
@@ -1896,7 +1968,7 @@ class Engine:
                 self.event("สั่ง %s อินสแตนซ์ %s" % (act, ", ".join(str(i.idx) for i in ts)), "cyan")
         elif cmd == "status":
             for i in self.insts:
-                self.event("#%d %s | %s" % (i.idx, STATE_TH.get(i.state, (i.state,))[0], i.detail or "-"))
+                self.event("#%d %s | %s" % (i.idx, STATE_LABEL.get(i.state, (i.state,))[0], i.detail or "-"))
         elif cmd in ("streamer", "hide"):
             on = (not STREAMER["on"]) if not args else args[0] in ("on", "1", "yes", "y")
             STREAMER["on"] = self.cfg.d["ui"]["streamer_mode"] = on
@@ -2126,7 +2198,7 @@ class Engine:
         for col in ("#", "แพ็กเกจ", "บัญชี", "สถานะ", "เล่นมา", "ล้มเหลว", "รีจอย", "ถัดไป", "รายละเอียด"):
             t.add_column(col, overflow="fold")
         for i in self.insts:
-            label, style = STATE_TH.get(i.state, (i.state, ""))
+            label, style = STATE_LABEL.get(i.state, (i.state, ""))
             nxt = "%ds" % max(0, int(i.next_at - now)) if i.next_at and i.state in ("ok", "unknown", "joining", "backoff") else "-"
             up = fmt_dur(now - i.ok_since) if i.ok_since and i.state == "ok" else "-"
             t.add_row(str(i.idx), i.pkg, hide_name(i.user) or "-", Text(label, style=style), up, str(i.fails),
@@ -2803,6 +2875,30 @@ def launch_all_roblox(cfg):
     pause()
 
 
+def menu_open_all(cfg):
+    while True:
+        banner(cfg)
+        t = Table(title="เปิด Roblox ทั้งหมด", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
+            t.add_column(col)
+        t.add_row("1", "เปิด Roblox ทุกอินสแตนซ์ที่เลือกตอนนี้ (ทีละตัว ไม่ force-stop)", "")
+        t.add_row("2", "หน่วงระหว่างตัว (วินาที, 0-600)", str(cfg.d.get("open_all_delay", 10)))
+        console.print(t)
+        c = ask("เลือกหมายเลข (0=กลับ)")
+        if c == "0":
+            return
+        if c == "1":
+            launch_all_roblox(cfg)
+        elif c == "2":
+            v = ask("ค่าหน่วงใหม่ (0-600):")
+            if v.isdigit() and 0 <= int(v) <= 600:
+                cfg.d["open_all_delay"] = int(v)
+                cfg.save()
+            elif v:
+                say("ค่าต้องอยู่ระหว่าง 0-600", "red")
+                pause()
+
+
 def menu_social(cfg):
     if not cookie_pairs(cfg)[0]:
         say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)", "red")
@@ -2820,9 +2916,8 @@ def menu_social(cfg):
         t.add_row("2", "เลิกบล็อกผู้ใช้")
         t.add_row("3", "เพิ่มเพื่อน (ส่งคำขอไปยังผู้ใช้)")
         t.add_row("4", "เพิ่มเพื่อนระหว่างบัญชีของเราเอง (ส่งคำขอ + กดรับให้อัตโนมัติ)")
-        t.add_row("5", "เปิด Roblox ทั้งหมด (หน่วง %ds ต่อตัว)" % int(cfg.d.get("open_all_delay", 10)))
-        t.add_row("6", "บล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้บล็อกกันเอง ไม่ต้องเลือกเป้าหมาย)")
-        t.add_row("7", "ปลดบล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้ปลดบล็อกกันเอง เฉพาะคู่ที่บล็อกกันอยู่)")
+        t.add_row("5", "บล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้บล็อกกันเอง ไม่ต้องเลือกเป้าหมาย)")
+        t.add_row("6", "ปลดบล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้ปลดบล็อกกันเอง เฉพาะคู่ที่บล็อกกันอยู่)")
         console.print(t)
         a = Table(box=box.SIMPLE, header_style="bold cyan")
         for col in ("#", "แพ็กเกจ", "บัญชี"):
@@ -2844,12 +2939,10 @@ def menu_social(cfg):
             if sel and confirm("%s %s (%d) ด้วย %d บัญชี?" % (SOCIAL_NAME[action], hide_name(tname), tid, len(sel))):
                 show_social(run_social(action, sel, tid))
                 pause()
-        elif c == "7":
-            unblock_each_other(cfg, accts)
         elif c == "6":
-            block_each_other(cfg, accts)
+            unblock_each_other(cfg, accts)
         elif c == "5":
-            launch_all_roblox(cfg)
+            block_each_other(cfg, accts)
         elif c == "4":
             sel = pick_accounts(accts)
             if len(sel) < 2:
@@ -2943,7 +3036,6 @@ def menu_auto(cfg):
         t.add_row(str(n + 2), "เวลารอเข้าเกมหลังเปิดแอป (วินาที)", str(cfg.d["join_grace"]), "")
         t.add_row(str(n + 3), "Heartbeat (สคริปต์ในเกม) ...", onoff(cfg.d["heartbeat"]["enabled"]), "เมนูย่อย")
         t.add_row(str(n + 4), "ประสิทธิภาพ: ล้างแรม / ลดการใช้ CPU ...", "", "เมนูย่อย")
-        t.add_row(str(n + 5), "หน้าจอ: ตรวจ Disconnected / ล้างหน้าจอซ้อน ...", onoff(cfg.d["dialog_detect"]["enabled"]), "เมนูย่อย")
         console.print(t)
         c = ask("เลือกหมายเลขเพื่อสลับ/แก้ไข (0=กลับ)")
         if c == "0":
@@ -2956,8 +3048,6 @@ def menu_auto(cfg):
             menu_heartbeat(cfg)
         elif c == str(n + 4):
             menu_perf(cfg)
-        elif c == str(n + 5):
-            menu_screen(cfg)
         elif c in (str(n + 1), str(n + 2)):
             v = ask("ค่าใหม่ (ตัวเลข):")
             if v.isdigit():
@@ -2966,6 +3056,101 @@ def menu_auto(cfg):
                 else:
                     cfg.d["join_grace"] = max(30, int(v))
                 cfg.save()
+
+
+def fps_cap_summary(cfg):
+    default, caps = fps_caps(cfg)
+    if not default and not caps:
+        return "ไม่ตั้ง"
+    return "%d บัญชี, ค่าเริ่มต้น %s" % (len(caps), default or "ไม่แตะ")
+
+
+def read_cap(prompt, allow_zero=False):
+    """-> (ok, value). Enter = clear (None)."""
+    v = ask(prompt).strip()
+    if not v:
+        return True, None
+    if v.isdigit() and (FPS_CAP_MIN <= int(v) <= FPS_CAP_MAX or (allow_zero and int(v) == 0)):
+        return True, int(v)
+    say("ค่าต้องอยู่ระหว่าง %d-%d" % (FPS_CAP_MIN, FPS_CAP_MAX), "red")
+    pause()
+    return False, None
+
+
+def menu_fps_cap(cfg):
+    """Per-account FPS cap. The account is identified by its Roblox user ID (fetched from the cookie),
+    and the generated heartbeat.lua looks the ID up in-game, so it follows the account, not the clone."""
+    fc = cfg.d["heartbeat"].setdefault("fps_cap", {})
+    fc.setdefault("default", 0)
+    if not isinstance(fc.get("accounts"), dict):
+        fc["accounts"] = {}
+    if not cookie_pairs(cfg)[0]:
+        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)", "red")
+        return pause()
+    say("กำลังดึง Roblox ID จากคุกกี้...", "dim")
+    accts = social_accounts(cfg)
+    if not accts:
+        return pause()
+
+    def apply():
+        cfg.save()
+        if cfg.d["autoexec"]["auto_create"]:
+            report_autoexec(cfg, install_autoexec(cfg), quiet_ok=False)
+        say("สคริปต์ใหม่จะมีผลตอนเข้าเกมครั้งถัดไป (รีจอยหรือเปิดเกมใหม่) ต้องมี setfpscap ในเอ็กซิคิวเตอร์", "dim")
+        pause()
+
+    while True:
+        banner(cfg)
+        t = Table(title="FPS cap ต่อบัญชี (จับคู่ด้วย Roblox ID)", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "แพ็กเกจ", "บัญชี", "Roblox ID", "FPS cap"):
+            t.add_column(col)
+        for n, (pkg, _, uid, name) in enumerate(accts, 1):
+            rec = fc["accounts"].get(str(uid))
+            cap = rec.get("cap") if isinstance(rec, dict) else rec
+            t.add_row(str(n), pkg, hide_name(name), hide_id(uid), str(cap) if cap else "ไม่ตั้ง")
+        console.print(t)
+        n = len(accts)
+        a = Table(box=box.SIMPLE, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
+            a.add_column(col)
+        a.add_row(str(n + 1), "ตั้งเท่ากันทุกบัญชีในตาราง", "")
+        a.add_row(str(n + 2), "ค่าเริ่มต้นของบัญชีที่ไม่อยู่ในตาราง (0=ไม่แตะ)", str(fc["default"] or "ไม่แตะ"))
+        a.add_row(str(n + 3), "ล้างค่าทั้งหมด", "")
+        console.print(a)
+        c = ask("เลือกหมายเลข (0=กลับ)")
+        if c == "0":
+            return
+        if c.isdigit() and 1 <= int(c) <= n:
+            pkg, _, uid, name = accts[int(c) - 1]
+            ok, cap = read_cap("FPS cap ของ %s (%d-%d, Enter=ล้าง):" % (hide_name(name), FPS_CAP_MIN, FPS_CAP_MAX))
+            if not ok:
+                continue
+            if cap:
+                fc["accounts"][str(uid)] = {"name": name, "cap": cap}
+            else:
+                fc["accounts"].pop(str(uid), None)
+            apply()
+        elif c == str(n + 1):
+            ok, cap = read_cap("FPS cap สำหรับทุกบัญชี (%d-%d, Enter=ล้าง):" % (FPS_CAP_MIN, FPS_CAP_MAX))
+            if not ok:
+                continue
+            for _, _, uid, name in accts:
+                if cap:
+                    fc["accounts"][str(uid)] = {"name": name, "cap": cap}
+                else:
+                    fc["accounts"].pop(str(uid), None)
+            apply()
+        elif c == str(n + 2):
+            ok, cap = read_cap("ค่าเริ่มต้น (%d-%d, 0 หรือ Enter=ไม่แตะ):" % (FPS_CAP_MIN, FPS_CAP_MAX), allow_zero=True)
+            if not ok:
+                continue
+            fc["default"] = cap or 0
+            apply()
+        elif c == str(n + 3):
+            if confirm("ล้าง FPS cap ทั้งหมด?"):
+                fc["accounts"].clear()
+                fc["default"] = 0
+                apply()
 
 
 def menu_heartbeat(cfg):
@@ -2983,7 +3168,8 @@ def menu_heartbeat(cfg):
         t.add_row("6", "โฟลเดอร์ autoexec ของ Delta (ใส่ {pkg} = แยกโฟลเดอร์ต่อโคลน)", T(", ".join(cfg.d["autoexec"]["dirs"])))
         t.add_row("7", "สร้าง/อัปเดต heartbeat.lua ในโฟลเดอร์นั้นอัตโนมัติ", onoff(cfg.d["autoexec"]["auto_create"]))
         t.add_row("8", "สร้าง/อัปเดต heartbeat.lua ตอนนี้", "")
-        t.add_row("9", "แสดงกล่อง FPS บนจอเกม (ลากได้ พื้นดำกรอบขาว)", onoff(h["show_fps"]))
+        t.add_row("9", "แสดงตัวเลข FPS บนจอเกม (ลากได้ ไม่มีกรอบ ปรับขนาดตามจอ)", onoff(h["show_fps"]))
+        t.add_row("10", "FPS cap ต่อบัญชี (ดึง Roblox ID จากคุกกี้) ...", T(fps_cap_summary(cfg)))
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
@@ -3020,84 +3206,8 @@ def menu_heartbeat(cfg):
                 report_autoexec(cfg, install_autoexec(cfg), quiet_ok=False)
                 say("สคริปต์ใหม่จะโหลดตอนเข้าเกมครั้งถัดไป (รีจอยหรือเปิดเกมใหม่)", "dim")
                 pause()
-        cfg.save()
-
-
-def menu_screen(cfg):
-    d, g, a = cfg.d["dialog_detect"], cfg.d["screen_guard"], cfg.d["arrange"]
-    while True:
-        banner(cfg)
-        t = Table(title="หน้าจอ: ตรวจ Disconnected / ล้างหน้าจอซ้อน", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "รายการ", "ค่า"):
-            t.add_column(col)
-        rows = [("ตรวจหน้าต่าง Disconnected/Error (เช่น Error Code 277) จากภาพหน้าจอ แล้วรีจอย", onoff(d["enabled"])),
-                ("ตรวจทุก (วินาที, 15-300)", str(d["every_sec"])),
-                ("ยืนยันกี่รอบก่อนรีจอย (1-5)", str(d["confirm"])),
-                ("ล้างหน้าจอซ้อนอัตโนมัติ (หน้าต่างแจ้ง error ของระบบ / task ซ้ำ)", onoff(g["enabled"])),
-                ("ตรวจทุก (วินาที, 30-600)", str(g["check_sec"])),
-                ("force-stop แอปที่มีหน้าต่างซ้อน (task ซ้ำ)", onoff(g["fix_stacked"])),
-                ("ปิดแอปแปลกปลอมที่ขึ้นทับหน้าจอ ⚠ (ยกเว้น Termux/ระบบ/หน้าหลัก)", onoff(g["kill_stray"])),
-                ("ทดสอบตรวจ Disconnected ตอนนี้ (ไม่ทำอะไร)", ""),
-                ("ตรวจหน้าจอซ้อนตอนนี้ (ไม่ทำอะไร)", ""),
-                ("ล้างหน้าจอเดี๋ยวนี้ (force)", ""),
-                ("เรียงหน้าต่างเกมอัตโนมัติทุกครั้งที่เปิด/รีจอย (ไม่ให้ซ้อนกัน)", onoff(a["enabled"])),
-                ("จำนวนคอลัมน์ (0=อัตโนมัติ, 0-6)", str(a["cols"])),
-                ("เรียงหน้าต่างเกมเดี๋ยวนี้", "")]
-        for i, (label, val) in enumerate(rows, 1):
-            t.add_row(str(i), label, val)
-        console.print(t)
-        if not ENV.root:
-            say("ฟีเจอร์หน้าจอทั้งหมดต้องใช้รูท (โหมดไม่รูทใช้คุกกี้/heartbeat ตรวจหลุดแทน)", "yellow")
-        c = ask("เลือกหมายเลข (0=กลับ)")
-        if c == "0":
-            return
-        if c == "1":
-            d["enabled"] = not d["enabled"]
-        elif c == "4":
-            g["enabled"] = not g["enabled"]
-        elif c == "6":
-            g["fix_stacked"] = not g["fix_stacked"]
-        elif c == "7":
-            g["kill_stray"] = not g["kill_stray"]
-        elif c in ("2", "3", "5"):
-            sec, key, lo, hi = {"2": (d, "every_sec", 15, 300), "3": (d, "confirm", 1, 5), "5": (g, "check_sec", 30, 600)}[c]
-            v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
-            if v.isdigit() and lo <= int(v) <= hi:
-                sec[key] = int(v)
-            elif v:
-                say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
-                pause()
-        elif c == "11":
-            a["enabled"] = not a["enabled"]
-        elif c == "12":
-            v = ask("ค่าใหม่ (0-6):")
-            if v.isdigit() and 0 <= int(v) <= 6:
-                a["cols"] = int(v)
-            elif v:
-                say("ค่าต้องอยู่ระหว่าง 0-6", "red")
-                pause()
-        elif c == "13":
-            if not ENV.root:
-                say("ต้องใช้รูท", "red")
-            else:
-                ok, msg = arrange_windows(cfg, selected_packages(cfg))
-                say(msg, "green" if ok else "yellow")
-            pause()
-        elif c in ("8", "9", "10"):
-            if not ENV.root:
-                say("ต้องใช้รูท", "red")
-            elif c == "8":
-                found, info = detect_screen_dialog()
-                say("ผล: %s (%s)  หน้าต่างที่โฟกัส: %s" % (
-                    "พบหน้าต่าง Disconnected" if found else ("ไม่พบ" if found is False else "ตรวจไม่ได้"), info,
-                    parse_focus(foreground_text()) or "-"), "green" if found is False else "yellow")
-            else:
-                info = screen_scan(cfg)
-                say("โฟกัส: %s | หน้าต่าง error: %s | แอปที่มี task ซ้ำ: %s" % (
-                    info["top"] or "-", ", ".join(sorted(info["dialogs"])) or "-", ", ".join(info["stacked"]) or "-"))
-                if c == "10":
-                    say("ทำแล้ว: " + ", ".join(screen_clear(cfg, info, force_all=True)), "green")
-            pause()
+        elif c == "10":
+            menu_fps_cap(cfg)
         cfg.save()
 
 
@@ -3244,7 +3354,8 @@ def menu_webhook(cfg, hook):
 
 MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
-        ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"), ("0", "ออก")]
+        ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
+        ("9", "เปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("0", "ออก")]
 
 
 def main():
@@ -3290,6 +3401,8 @@ def main():
             menu_webhook(cfg, hook)
         elif c == "8":
             menu_social(cfg)
+        elif c == "9":
+            menu_open_all(cfg)
         elif c == "0":
             say("ลาก่อน!", "cyan")
             return
