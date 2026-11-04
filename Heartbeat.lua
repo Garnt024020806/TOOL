@@ -3,7 +3,11 @@
 local HOST     = "http://127.0.0.1:8765"
 local ID       = "auto"       -- ชื่อแพ็กเกจหรือเลขอินสแตนซ์ ต้องตรงกับในเครื่องมือ
 local INTERVAL = 15   -- ส่งทุกกี่วินาที
-local SHOW_FPS = true    -- true = แสดงกล่อง FPS บนจอ (ลากย้ายได้)
+local SHOW_FPS = true    -- true = แสดงตัวเลข FPS บนจอ (ลากย้ายได้)
+local DEFAULT_CAP = 0  -- FPS cap ของบัญชีที่ไม่อยู่ในรายการ (0 = ไม่แตะ)
+local CAPS = {                  -- FPS cap ต่อบัญชี: [Roblox UserId] = FPS (ตั้งจากเมนูในเครื่องมือ)
+
+}
 
 if getgenv then
     if getgenv().__GARNT_HB then return end
@@ -19,6 +23,15 @@ local UserInputService = game:GetService("UserInputService")
 
 local lp = Players.LocalPlayer
 while not lp do task.wait(1); lp = Players.LocalPlayer end
+
+-- FPS cap: ดู UserId ของบัญชีที่กำลังเล่นอยู่ แล้วตั้งเพดานตามที่ตั้งไว้ (ต้องมี setfpscap ในเอ็กซิคิวเตอร์)
+local function applyCap()
+    local cap = CAPS[lp.UserId] or DEFAULT_CAP
+    if type(cap) ~= "number" or cap <= 0 then return end
+    local fn = setfpscap or set_fps_cap or (getgenv and getgenv().setfpscap)
+    if fn then pcall(fn, cap) end
+end
+pcall(applyCap)
 
 local lastFrame = os.clock()
 local frames, fps, winStart = 0, 0, os.clock()
@@ -61,12 +74,14 @@ pcall(function() GuiService.ErrorMessageChanged:Connect(function() pcall(beat) e
 
 task.spawn(function()
     while true do
+        pcall(applyCap)                              -- ตั้งซ้ำทุกรอบ เผื่อเกม/เอ็กซิคิวเตอร์รีเซ็ตค่า
         pcall(beat)
         task.wait(INTERVAL)
     end
 end)
 
--- กล่อง FPS: พื้นดำ กรอบขาว ลากไปวางที่ไหนก็ได้ (จำตำแหน่งไว้ถ้าเอ็กซิคิวเตอร์รองรับ writefile)
+-- ตัวเลข FPS: ไม่มีกรอบ ฟอนต์กลม ขนาดปรับตามความกว้างจออัตโนมัติ ลากไปวางที่ไหนก็ได้
+-- (จำตำแหน่งไว้ถ้าเอ็กซิคิวเตอร์รองรับ writefile)
 local POS_FILE = "garnt_fps_pos.txt"
 
 local function parentGui(gui)
@@ -96,6 +111,14 @@ local function savePos(x, y)
     if writefile then pcall(writefile, POS_FILE, string.format("%d,%d", x, y)) end
 end
 
+local function roundFont()
+    for _, name in ipairs({ "FredokaOne", "Nunito", "GothamBold" }) do   -- ตัวกลมก่อน ถ้าไม่มีค่อยถอยไปตัวถัดไป
+        local ok, f = pcall(function() return Enum.Font[name] end)
+        if ok and f then return f end
+    end
+    return Enum.Font.SourceSansBold
+end
+
 local function buildFpsBox()
     local gui = Instance.new("ScreenGui")
     gui.Name = "GARNT_FPS"
@@ -104,45 +127,63 @@ local function buildFpsBox()
     gui.DisplayOrder = 999999
     if not parentGui(gui) then return end
 
-    local W, H = 104, 34
     local box = Instance.new("Frame")
     box.Name = "Box"
-    box.Size = UDim2.fromOffset(W, H)
-    box.BackgroundColor3 = Color3.fromRGB(0, 0, 0)       -- พื้นดำ
-    box.BackgroundTransparency = 0
+    box.BackgroundColor3 = Color3.fromRGB(0, 0, 0)       -- พื้นดำ ไม่มีกรอบ
+    box.BackgroundTransparency = 0.25
     box.BorderSizePixel = 0
     box.Active = true
     box.Parent = gui
 
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
+    corner.CornerRadius = UDim.new(1, 0)                 -- ขอบมนเต็มที่
     corner.Parent = box
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(255, 255, 255)         -- กรอบขาว
-    stroke.Thickness = 2
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Parent = box
 
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
     label.Size = UDim2.new(1, 0, 1, 0)
-    label.Font = Enum.Font.GothamMedium
-    label.TextSize = 18
+    label.Font = roundFont()
+    label.TextScaled = true
     label.TextColor3 = Color3.fromRGB(255, 255, 255)
     label.Text = "FPS --"
     label.Parent = box
 
-    local function clamp(x, y)
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0.12, 0)
+    pad.PaddingRight = UDim.new(0.12, 0)
+    pad.PaddingTop = UDim.new(0.14, 0)
+    pad.PaddingBottom = UDim.new(0.14, 0)
+    pad.Parent = label
+
+    local W, H = 72, 28
+    local function viewport()
         local cam = workspace.CurrentCamera
-        local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+        return (cam and cam.ViewportSize) or Vector2.new(800, 600)
+    end
+
+    local function clamp(x, y)
+        local vp = viewport()
         return math.clamp(x, 0, math.max(0, vp.X - W)), math.clamp(y, 0, math.max(0, vp.Y - H))
+    end
+
+    local function layout()                              -- ขนาดตามความกว้างจอ: เล็กกระทัดรัดแต่ยังอ่านออก
+        local vp = viewport()
+        W = math.clamp(math.floor(vp.X * 0.055), 56, 110)
+        H = math.floor(W * 0.4)
+        box.Size = UDim2.fromOffset(W, H)
+        local x, y = clamp(box.Position.X.Offset, box.Position.Y.Offset)
+        box.Position = UDim2.fromOffset(x, y)
     end
 
     local sx, sy = loadPos()
     if not sx then sx, sy = 12, 64 end
-    sx, sy = clamp(sx, sy)
     box.Position = UDim2.fromOffset(sx, sy)
+    layout()
+
+    local cam = workspace.CurrentCamera
+    if cam then
+        cam:GetPropertyChangedSignal("ViewportSize"):Connect(function() pcall(layout) end)   -- หมุนจอ/ย่อขยายหน้าต่าง
+    end
 
     local dragging, dragStart, startX, startY = false, nil, 0, 0
     box.InputBegan:Connect(function(input)
