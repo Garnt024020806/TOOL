@@ -43,7 +43,7 @@ try:
     from rich.table import Table
     from rich.text import Text
 except ImportError as _e:
-    print("Required library not found: %s\nRun: pip install -r requirements.txt" % _e)
+    print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
 VERSION = "1.7"
@@ -116,7 +116,7 @@ def scrub(s):
 
 
 def mask(cookie):
-    return "********  (%d chars)" % len(cookie)
+    return "********  (%d ตัวอักษร)" % len(cookie)
 
 
 # ----------------------------------------------------------------- streamer mode (display only)
@@ -424,10 +424,10 @@ def cpu_text():
         return "-"
     s = ("~%.0f%%" if r["approx"] else "%.0f%%") % r["now"]
     if r["avg"] is not None:
-        s += " | avg %.0f%%" % r["avg"]
-    s += " | %d cores" % r["cores"]
+        s += " | เฉลี่ย %.0f%%" % r["avg"]
+    s += " | %d คอร์" % r["cores"]
     if r["approx"]:
-        s += " (estimated from load average)"
+        s += " (ประมาณจากโหลดเฉลี่ย)"
     return s
 
 
@@ -463,7 +463,7 @@ def drop_ram(kill_cached=False, cfg=None):
     """Root only. Drop page cache (and optionally kill cached background apps).
     -> (ok, before_mb, after_mb); a per-step report is left in RAM_LAST["detail"]."""
     if not ENV.root:
-        RAM_LAST["detail"] = "root required"
+        RAM_LAST["detail"] = "ต้องใช้รูท"
         return False, None, None
     before = mem_available_mb()
     steps = []
@@ -576,7 +576,7 @@ def detect_screen_dialog():
     data = sh_bytes("screencap", root=True)
     fr = parse_raw_frame(data)
     if not fr or fr[2] not in (1, 2, 5):
-        return None, "cannot read the screenshot"
+        return None, "อ่านภาพหน้าจอไม่ได้"
     w, h, fmt, off = fr
     return find_disconnect_dialog(data, w, h, off), "%dx%d format=%d" % (w, h, fmt)
 
@@ -672,16 +672,16 @@ def parse_task_ids(out):
 def arrange_windows(cfg, pkgs):
     """Tile the game windows of `pkgs` (in order) across the screen with `am task resize`. -> (ok, message)"""
     if not ENV.root:
-        return False, "root required"
+        return False, "ต้องใช้สิทธิ์รูท"
     a = cfg.d["arrange"]
     w, h = display_size()
     if not (w and h):
-        return False, "cannot read the screen size"
+        return False, "อ่านขนาดหน้าจอไม่ได้"
     _, o = sh(r"dumpsys activity activities 2>/dev/null | grep -E '\* (Task|TaskRecord)\{'", root=True, timeout=40)
     tasks = parse_task_ids(o)
     present = [p for p in pkgs if tasks.get(p)]
     if not present:
-        return False, "instance window not found (game not open?)"
+        return False, "ไม่พบหน้าต่างของอินสแตนซ์ (เกมยังไม่เปิด?)"
     rects = grid_rects(len(present), w, h, int(a["cols"]), int(a["gap"]))
     am, done, bad = AM(), 0, []
     for p, (l, t, r, b) in zip(present, rects):
@@ -693,9 +693,9 @@ def arrange_windows(cfg, pkgs):
         else:
             bad.append(p)
     cols = max(1, min(len(present), int(a["cols"]) or int(round((len(present) * w / float(h)) ** 0.5))))
-    msg = "%d windows (%d columns) screen %dx%d" % (done, cols, w, h)
+    msg = "%d ตัว (%d คอลัมน์) ขนาดจอ %dx%d" % (done, cols, w, h)
     if bad:
-        msg += " | failed: " + ", ".join(bad)
+        msg += " | ไม่สำเร็จ: " + ", ".join(bad)
     return done > 0, msg
 
 
@@ -717,19 +717,19 @@ def screen_clear(cfg, info, force_all=False):
     """Close system dialogs and force-stop apps causing stacked/overlapping windows. -> list of actions (Thai)."""
     g, prefix, q = cfg.d["screen_guard"], prefixes(cfg), shlex.quote
     sh(AM() + " broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS", root=True, timeout=20)
-    acts = ["closed system dialog"]
+    acts = ["ปิดหน้าต่างระบบ"]
     for p in sorted(info["dialogs"]):
         if p != "?" and (p.startswith(prefix) or (g["kill_stray"] and p not in g["keep"])):
             sh(AM() + " force-stop " + q(p), root=True, timeout=20)
-            acts.append("force-stop %s (error dialog)" % p)
+            acts.append("force-stop %s (หน้าต่างแจ้งข้อผิดพลาด)" % p)
     if g["fix_stacked"] or force_all:
         for p in info["stacked"]:
             sh(AM() + " force-stop " + q(p), root=True, timeout=20)
-            acts.append("force-stop %s (stacked windows)" % p)
+            acts.append("force-stop %s (หน้าต่างซ้อน)" % p)
     sp = stray_pkg(cfg, info)
     if sp:
         sh(AM() + " force-stop " + q(sp), root=True, timeout=20)
-        acts.append("force-stop %s (covering the screen)" % sp)
+        acts.append("force-stop %s (ขึ้นทับหน้าจอ)" % sp)
     return acts
 
 
@@ -817,7 +817,7 @@ def open_game(pkg, uri, force_stop):
         rc, out2 = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % q(pkg), root=ENV.root, timeout=30)
         if rc != 0:
             return False, scrub((out + out2).strip()[:200])
-        return True, "app opened but the game link did not work (used the launcher instead)"
+        return True, "เปิดแอปแล้วแต่ลิงก์เกมไม่ทำงาน (ใช้ launcher แทน)"
     return True, "ok"
 
 
@@ -846,10 +846,10 @@ def prune_shots():
 # ----------------------------------------------------------------- cookies / roblox api
 COOKIE_TEMPLATE = (
     "# GARNT TOOL REJOIN - cookie.txt\n"
-    "# Put your own .ROBLOSECURITY cookie here, 1 line per account\n"
-    "# In the order of the detected instances (line 1 = first package). Never share this file.\n"
-    "# Blank lines and lines starting with # are skipped\n"
-    "# A line with only - means that instance has no cookie yet (keeps the order)\n"
+    "# ใส่คุกกี้ .ROBLOSECURITY ของบัญชีตัวเอง 1 บรรทัด / 1 บัญชี\n"
+    "# เรียงตามอินสแตนซ์ที่ตรวจพบ (บรรทัดแรก = แพ็กเกจแรก) ห้ามแชร์ไฟล์นี้ให้ใคร\n"
+    "# บรรทัดว่างและบรรทัดที่ขึ้นต้นด้วย # จะถูกข้าม\n"
+    "# บรรทัดที่มีแค่ - = อินสแตนซ์นั้นยังไม่มีคุกกี้ (ใช้คงลำดับ)\n"
 )
 
 
@@ -906,7 +906,7 @@ def who_am_i(s):
     try:
         r = s.get("https://users.roblox.com/v1/users/authenticated", timeout=12)
         if r.status_code == 401:
-            return None, None, "cookie expired/invalid"
+            return None, None, "คุกกี้หมดอายุ/ไม่ถูกต้อง"
         if r.status_code != 200:
             return None, None, "HTTP %d" % r.status_code
         j = r.json()
@@ -941,7 +941,7 @@ def _edit_cookie_db(dbfile, cookie):
     try:
         cols = con.execute("PRAGMA table_info(cookies)").fetchall()
         if not cols:
-            raise RuntimeError("cookies table not found")
+            raise RuntimeError("ไม่พบตาราง cookies")
         now = chrome_now()
         vals = {
             "creation_utc": now, "host_key": ".roblox.com", "name": ".ROBLOSECURITY", "value": cookie,
@@ -970,28 +970,28 @@ def _edit_cookie_db(dbfile, cookie):
 def inject_cookie(pkg, cookie):
     """Root only: write .ROBLOSECURITY into the cloned app's WebView cookie DB."""
     if not ENV.root:
-        return False, "root required"
+        return False, "ต้องใช้สิทธิ์รูท"
     q = shlex.quote
     _, out = sh("find /data/data/%s -maxdepth 4 -type f -name Cookies 2>/dev/null | head -n 1" % q(pkg), root=True)
     path = out.strip().splitlines()[0].strip() if out.strip() else ""
     if not path:
-        return False, "cookie database not found (open the app once first)"
+        return False, "ไม่พบฐานข้อมูลคุกกี้ (เปิดแอปค้างไว้ 1 ครั้งก่อน)"
     _, own = sh("stat -c '%%u:%%g' /data/data/%s" % q(pkg), root=True)
     own = own.strip()
     if not re.fullmatch(r"\d+:\d+", own):
-        return False, "cannot read the app folder owner"
+        return False, "อ่านเจ้าของโฟลเดอร์แอปไม่ได้"
     sh(AM() + " force-stop " + q(pkg), root=True)
     tmp = os.path.join(TMP_DIR, "garnt_%s.db" % pkg.replace(".", "_"))
     try:
         rc, o = sh("cp %s %s && chmod 666 %s" % (q(path), q(tmp), q(tmp)), root=True)
         if rc != 0:
-            return False, "failed to copy the database"
+            return False, "คัดลอกฐานข้อมูลไม่สำเร็จ"
         _edit_cookie_db(tmp, cookie)
         rc, o = sh("cp %s %s && chown %s %s && chmod 660 %s" % (q(tmp), q(path), own, q(path), q(path)), root=True)
         if rc != 0:
-            return False, "failed to write the database back"
+            return False, "เขียนฐานข้อมูลกลับไม่สำเร็จ"
         sh("rm -f %s-journal %s-wal %s-shm; restorecon %s" % (q(path), q(path), q(path), q(path)), root=True)
-        return True, "cookie injected"
+        return True, "ใส่คุกกี้แล้ว"
     except Exception as e:
         return False, scrub(e)[:100]
     finally:
@@ -1006,7 +1006,7 @@ def cookie_login(pairs):
     for pkg, ck in pairs:
         uid, name, err = who_am_i(make_session(ck))
         if not uid:
-            res.append((pkg, False, "cookie unusable: %s" % err))
+            res.append((pkg, False, "คุกกี้ใช้ไม่ได้: %s" % err))
             continue
         ok, msg = inject_cookie(pkg, ck)
         res.append((pkg, ok, ("%s: %s" % (hide_name(name), msg)) if ok else msg))
@@ -1022,16 +1022,16 @@ def read_app_cookie(pkg):
     """Root only: read .ROBLOSECURITY from the clone's WebView cookie DB (works on a copy, never edits the app).
     -> (cookie | None, message)"""
     if not ENV.root:
-        return None, "root required"
+        return None, "ต้องใช้สิทธิ์รูท"
     path = find_cookie_db(pkg)
     if not path:
-        return None, "cookie database not found (open the app once first)"
+        return None, "ไม่พบฐานข้อมูลคุกกี้ (เปิดแอปค้างไว้ 1 ครั้งก่อน)"
     tmpd = tempfile.mkdtemp(prefix="garnt_", dir=TMP_DIR)
     try:
         s, t = shlex.quote(path), shlex.quote(tmpd)
         rc, _ = sh("cp %s %s/ && chmod -R a+rw %s" % (s, t, t), root=True)
         if rc != 0:
-            return None, "failed to copy the database"
+            return None, "คัดลอกฐานข้อมูลไม่สำเร็จ"
         sh("cp %s-wal %s-shm %s-journal %s/ 2>/dev/null; chmod -R a+rw %s" % (s, s, s, t, t), root=True)
         con = sqlite3.connect(os.path.join(tmpd, os.path.basename(path)), timeout=10)
         try:
@@ -1050,8 +1050,8 @@ def read_app_cookie(pkg):
                 SECRETS.add(ck)
                 return ck, "ok"
         if any(enc for _, enc in rows):
-            return None, "the cookie in the app is encrypted and cannot be read"
-        return None, "no cookie found (not logged in to this app yet)"
+            return None, "คุกกี้ในแอปถูกเข้ารหัส อ่านไม่ได้"
+        return None, "ไม่พบคุกกี้ (ยังไม่ได้ล็อกอินในแอปนี้)"
     except Exception as e:
         return None, scrub(e)[:100]
     finally:
@@ -1070,7 +1070,7 @@ def pull_validated(pkgs):
         if uid:
             out.append((pkg, ck, name, ""))
         else:
-            out.append((pkg, None, None, "the cookie in the app is unusable: " + str(err)))
+            out.append((pkg, None, None, "คุกกี้ในแอปใช้ไม่ได้: " + str(err)))
     return out
 
 
@@ -1153,19 +1153,19 @@ class Hook:
                     return False
                 return True
         except Exception as e:
-            log.warning("webhook failed: %s", scrub(e))
+            log.warning("webhook ล้มเหลว: %s", scrub(e))
         return False
 
 
 # ----------------------------------------------------------------- heartbeat (in-game script -> local receiver)
 LUA_TEMPLATE = r"""-- GARNT TOOL REJOIN heartbeat (auto-generated)
--- For your own accounts and device only. Must run in an executor that supports HTTP
+-- ใช้กับบัญชีและเครื่องของตัวเองเท่านั้น ต้องรันผ่านเอ็กซิคิวเตอร์ที่รองรับ HTTP
 local HOST     = "http://127.0.0.1:__PORT__"
-local ID       = "__ID__"       -- package name or instance number, must match the tool
-local INTERVAL = __INTERVAL__   -- send every N seconds
-local SHOW_FPS = __SHOWFPS__    -- true = show the FPS number on screen (draggable)
-local DEFAULT_CAP = __DEFCAP__  -- FPS cap for accounts not in the list (0 = leave FPS alone)
-local CAPS = {                  -- FPS cap per account: [Roblox UserId] = FPS (set from the tool's menu)
+local ID       = "__ID__"       -- ชื่อแพ็กเกจหรือเลขอินสแตนซ์ ต้องตรงกับในเครื่องมือ
+local INTERVAL = __INTERVAL__   -- ส่งทุกกี่วินาที
+local SHOW_FPS = __SHOWFPS__    -- true = แสดงตัวเลข FPS บนจอ (ลากย้ายได้)
+local DEFAULT_CAP = __DEFCAP__  -- FPS cap ของบัญชีที่ไม่อยู่ในรายการ (0 = ไม่แตะ)
+local CAPS = {                  -- FPS cap ต่อบัญชี: [Roblox UserId] = FPS (ตั้งจากเมนูในเครื่องมือ)
 __CAPS__
 }
 
@@ -1184,9 +1184,9 @@ local UserInputService = game:GetService("UserInputService")
 local lp = Players.LocalPlayer
 while not lp do task.wait(1); lp = Players.LocalPlayer end
 
--- FPS cap: look up the UserId of the account that is playing and apply its cap (executor must have setfpscap)
--- capInfo is sent with the heartbeat (cap=) and shown in the console: off=not set for this ID nofn=no function
---   err=call failed ignNN=called but reads back NN flagNN=FFlag fallback setNN=applied
+-- FPS cap: ดู UserId ของบัญชีที่กำลังเล่นอยู่ แล้วตั้งเพดานตามที่ตั้งไว้ (ต้องมี setfpscap ในเอ็กซิคิวเตอร์)
+-- capInfo ถูกส่งไปกับ heartbeat (cap=) และแสดงในคอนโซล: off=ไม่ได้ตั้งให้ ID นี้ nofn=ไม่มีฟังก์ชัน err=เรียกแล้ว error
+--   ignNN=เรียกแล้วแต่อ่านกลับได้ NN flagNN=ใช้ FFlag สำรอง setNN=ตั้งแล้ว
 local capInfo = "off"
 
 local function findCapFn()
@@ -1220,7 +1220,7 @@ local function applyCap()
         capInfo = (back and back ~= cap) and ("ign" .. tostring(back)) or ("set" .. tostring(cap))
         return
     end
-    -- last resort: setfflag (not guaranteed to work in every executor)
+    -- ฟังก์ชันสำรอง: setfflag (ไม่ยืนยันว่าได้ผลในทุกเอ็กซิคิวเตอร์)
     if setfflag then
         local ok = pcall(setfflag, "DFIntTaskSchedulerTargetFps", tostring(cap))
         capInfo = ok and ("flag" .. tostring(cap)) or "nofn"
@@ -1258,11 +1258,11 @@ local function errorText()
 end
 
 local function beat()
-    if os.clock() - lastFrame > 5 then return end   -- game frozen: do not send
+    if os.clock() - lastFrame > 5 then return end   -- เกมค้าง: ไม่ส่ง
     local url = string.format("%s/hb?id=%s&user=%s&uid=%d&place=%d&job=%s&fps=%d", HOST,
         HttpService:UrlEncode(ID), HttpService:UrlEncode(lp.Name), lp.UserId, game.PlaceId,
         HttpService:UrlEncode(game.JobId), fps)
-    local err = errorText()                          -- Disconnected dialog showing: send the error text right away
+    local err = errorText()                          -- ขึ้นหน้าต่าง Disconnected: ส่งข้อความ error ทันที
     if err then url = url .. "&err=" .. HttpService:UrlEncode(string.sub(err, 1, 120)) end
     url = url .. "&cap=" .. capInfo
     httpGet(url)
@@ -1272,14 +1272,14 @@ pcall(function() GuiService.ErrorMessageChanged:Connect(function() pcall(beat) e
 
 task.spawn(function()
     while true do
-        pcall(applyCap)                              -- re-apply every round in case the game/executor resets it
+        pcall(applyCap)                              -- ตั้งซ้ำทุกรอบ เผื่อเกม/เอ็กซิคิวเตอร์รีเซ็ตค่า
         pcall(beat)
         task.wait(INTERVAL)
     end
 end)
 
--- FPS number: no frame, round font, size follows the screen width automatically, draggable anywhere
--- (position is remembered if the executor supports writefile)
+-- ตัวเลข FPS: ไม่มีกรอบ ฟอนต์กลม ขนาดปรับตามความกว้างจออัตโนมัติ ลากไปวางที่ไหนก็ได้
+-- (จำตำแหน่งไว้ถ้าเอ็กซิคิวเตอร์รองรับ writefile)
 local POS_FILE = "garnt_fps_pos.txt"
 
 local function parentGui(gui)
@@ -1310,7 +1310,7 @@ local function savePos(x, y)
 end
 
 local function roundFont()
-    for _, name in ipairs({ "FredokaOne", "Nunito", "GothamBold" }) do   -- round fonts first, fall back to the next one
+    for _, name in ipairs({ "FredokaOne", "Nunito", "GothamBold" }) do   -- ตัวกลมก่อน ถ้าไม่มีค่อยถอยไปตัวถัดไป
         local ok, f = pcall(function() return Enum.Font[name] end)
         if ok and f then return f end
     end
@@ -1327,14 +1327,14 @@ local function buildFpsBox()
 
     local box = Instance.new("Frame")
     box.Name = "Box"
-    box.BackgroundColor3 = Color3.fromRGB(0, 0, 0)       -- black background, no border
+    box.BackgroundColor3 = Color3.fromRGB(0, 0, 0)       -- พื้นดำ ไม่มีกรอบ
     box.BackgroundTransparency = 0.25
     box.BorderSizePixel = 0
     box.Active = true
     box.Parent = gui
 
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(1, 0)                 -- fully rounded
+    corner.CornerRadius = UDim.new(1, 0)                 -- ขอบมนเต็มที่
     corner.Parent = box
 
     local label = Instance.new("TextLabel")
@@ -1364,7 +1364,7 @@ local function buildFpsBox()
         return math.clamp(x, 0, math.max(0, vp.X - W)), math.clamp(y, 0, math.max(0, vp.Y - H))
     end
 
-    local function layout()                              -- size follows the screen width: compact but readable
+    local function layout()                              -- ขนาดตามความกว้างจอ: เล็กกระทัดรัดแต่ยังอ่านออก
         local vp = viewport()
         W = math.clamp(math.floor(vp.X * 0.055), 56, 110)
         H = math.floor(W * 0.4)
@@ -1380,7 +1380,7 @@ local function buildFpsBox()
 
     local cam = workspace.CurrentCamera
     if cam then
-        cam:GetPropertyChangedSignal("ViewportSize"):Connect(function() pcall(layout) end)   -- rotation / window resize
+        cam:GetPropertyChangedSignal("ViewportSize"):Connect(function() pcall(layout) end)   -- หมุนจอ/ย่อขยายหน้าต่าง
     end
 
     local dragging, dragStart, startX, startY = false, nil, 0, 0
@@ -1426,15 +1426,15 @@ def cap_txt(rec):
         return ""
     num = "".join(ch for ch in c if ch.isdigit())
     if c == "off":
-        return " | cap: not set for this ID (%s)" % hide_id(rec.get("uid", ""))
+        return " | cap: ไม่ได้ตั้งให้ ID นี้ (%s)" % hide_id(rec.get("uid", ""))
     if c == "nofn":
-        return " | cap: executor has no setfpscap"
+        return " | cap: เอ็กซิคิวเตอร์ไม่มี setfpscap"
     if c == "err":
-        return " | cap: call failed"
+        return " | cap: เรียกแล้ว error"
     if c.startswith("ign"):
-        return " | cap: called but ignored (reads back %s)" % num
+        return " | cap: เรียกแล้วแต่ไม่ติด (อ่านกลับได้ %s)" % num
     if c.startswith("flag"):
-        return " | cap: FFlag fallback %s (unverified)" % num
+        return " | cap: ใช้ FFlag สำรอง %s (ไม่ยืนยัน)" % num
     if c.startswith("set"):
         return " | cap %s ✓" % num
     return ""
@@ -1550,8 +1550,8 @@ def install_autoexec(cfg):
 
 
 def report_autoexec(cfg, results, quiet_ok=True):
-    names = {"created": "created", "updated": "updated", "ok": "up to date",
-             "skipped": "skipped (a file with the same name that is not the tool's)"}
+    names = {"created": "สร้างแล้ว", "updated": "อัปเดตแล้ว", "ok": "พร้อมใช้งาน",
+             "skipped": "ข้าม (มีไฟล์ชื่อเดียวกันที่ไม่ใช่ของเครื่องมือ)"}
     for path, st in results:
         if st == "ok" and quiet_ok:
             continue
@@ -1560,7 +1560,7 @@ def report_autoexec(cfg, results, quiet_ok=True):
         cfg.d["autoexec"]["enabled_once"] = True
         cfg.d["heartbeat"]["enabled"] = True       # first install only: turn heartbeat on (later changes are yours)
         cfg.save()
-        say("heartbeat enabled for you (turn it off at Menu 6 > Heartbeat > 1)", "cyan")
+        say("เปิดใช้ heartbeat ให้แล้ว (ปิดได้ที่ เมนู 6 > Heartbeat > 1)", "cyan")
 
 
 class Heartbeats:
@@ -1692,7 +1692,7 @@ class ConsoleHook:
                     continue
                 return r.status_code < 300
         except Exception as e:
-            log.warning("console webhook failed: %s", scrub(e))
+            log.warning("console webhook ล้มเหลว: %s", scrub(e))
         return False
 
     def close(self):
@@ -1789,7 +1789,7 @@ def sys_load():
         return None
 
 
-CONSOLE_HELP = ("Commands: rejoin <number|all> | pause <number|all> | resume <number|all> | status | ram | shot | clear | arrange | streamer | help | quit")
+CONSOLE_HELP = ("คำสั่ง: rejoin <เลข|all> | pause <เลข|all> | resume <เลข|all> | status | ram | shot | clear | arrange | streamer | help | quit")
 
 
 # ----------------------------------------------------------------- engine
@@ -1812,14 +1812,14 @@ class Inst:
         self.started_at = time.time()
 
 
-REASON = {"dead": "app closed/frozen (process not found)", "background": "app is not on screen",
-          "noheartbeat": "no heartbeat from the in-game script",
-          "disconnected": "Disconnected dialog found (e.g. Error Code 277)",
-          "notingame": "not in the game", "timed": "timed rejoin"}
-STATE_LABEL = {"queued": ("queued", "dim"), "launching": ("launching", "cyan"),
-            "joining": ("joining", "yellow"), "ok": ("OK", "bold green"),
-            "unknown": ("unknown", "magenta"), "backoff": ("waiting to rejoin", "bold red"),
-            "stopped": ("stopped", "dim"), "paused": ("paused", "yellow")}
+REASON = {"dead": "แอปปิด/ค้าง (ไม่พบโปรเซส)", "background": "แอปไม่ได้อยู่หน้าจอ",
+          "noheartbeat": "ไม่มี heartbeat จากสคริปต์ในเกม",
+          "disconnected": "พบหน้าต่าง Disconnected (เช่น Error Code 277)",
+          "notingame": "ไม่ได้อยู่ในเกม", "timed": "รีจอยตามเวลาที่ตั้งไว้"}
+STATE_LABEL = {"queued": ("รอคิวเปิด", "dim"), "launching": ("กำลังเปิดแอป", "cyan"),
+            "joining": ("กำลังเข้าเกม", "yellow"), "ok": ("ปกติ", "bold green"),
+            "unknown": ("ไม่ทราบสถานะ", "magenta"), "backoff": ("รอรีจอย", "bold red"),
+            "stopped": ("หยุดแล้ว", "dim"), "paused": ("หยุดชั่วคราว", "yellow")}
 
 
 def fmt_dur(sec):
@@ -1857,10 +1857,10 @@ class Engine:
         return max(10, int(self.cfg.d["check_interval"]))
 
     def start(self):
-        self.event("Started %d instances (mode %s)" % (len(self.insts), "ROOT" if ENV.root else "non-root"), "green")
-        self.hook.send("start", "▶️ Auto rejoin started", "Managing %d instances" % len(self.insts),
-                       [("Mode", "ROOT" if ENV.root else "non-root"), ("Check every", "%ds" % self.interval()),
-                        ("Packages", ", ".join(i.pkg for i in self.insts))])
+        self.event("เริ่มทำงาน %d อินสแตนซ์ (โหมด %s)" % (len(self.insts), "ROOT" if ENV.root else "ไม่รูท"), "green")
+        self.hook.send("start", "▶️ เริ่มรีจอยอัตโนมัติ", "เริ่มจัดการ %d อินสแตนซ์" % len(self.insts),
+                       [("โหมด", "ROOT" if ENV.root else "ไม่รูท"), ("ตรวจทุก", "%ds" % self.interval()),
+                        ("แพ็กเกจ", ", ".join(i.pkg for i in self.insts))])
         SNAP["fg"] = bool(ENV.root and (self.cfg.d["auto"]["foreground_check"] or self.cfg.d["dialog_detect"]["enabled"]))
         for target, args in [(self._worker, (i,)) for i in self.insts] + [(self._housekeeper, ())]:
             t = threading.Thread(target=target, args=args, daemon=True)
@@ -1876,9 +1876,9 @@ class Engine:
         wake_lock(False)
         SNAP["fg"] = False
         up = fmt_dur(time.time() - self.t0)
-        self.event("Stopped (ran for %s)" % up)
-        self.hook.send("stop", "⏹️ Auto rejoin stopped", "Ran for " + up,
-                       [(i.pkg, "%d rejoins" % i.rejoins) for i in self.insts], sync=True)
+        self.event("หยุดการทำงาน (รันมา %s)" % up)
+        self.hook.send("stop", "⏹️ หยุดรีจอยอัตโนมัติ", "รันมาแล้ว " + up,
+                       [(i.pkg, "รีจอย %d ครั้ง" % i.rejoins) for i in self.insts], sync=True)
 
     def _next_tick(self):
         """All instances are checked on the same time grid so one snapshot serves every instance."""
@@ -1897,7 +1897,7 @@ class Engine:
                 due = r["interval_min"] > 0 and now - last_ram >= r["interval_min"] * self.MIN
                 low = bool(r["min_free_mb"] > 0 and free is not None and free < r["min_free_mb"] and now - last_ram >= self.MIN)
                 if due or low:
-                    self.clear_ram("low free RAM" if low else "scheduled")
+                    self.clear_ram("แรมว่างต่ำ" if low else "ตามเวลา")
                     last_ram = time.time()
             g = c["screen_guard"]
             if g["enabled"] and ENV.root and now - last_guard >= int(g["check_sec"]):
@@ -1905,14 +1905,14 @@ class Engine:
                 try:
                     self.guard_tick()
                 except Exception as e:
-                    self.event("Stacked-window cleanup error: %s" % e, "red")
+                    self.event("ล้างหน้าจอซ้อนผิดพลาด: %s" % e, "red")
             pm = int(c["webhook"]["periodic_min"])
             if pm > 0 and now - last_rep >= pm * self.MIN:
                 last_rep = now
                 try:
                     self.report(pm)
                 except Exception as e:
-                    self.event("Status report failed: %s" % e, "red")
+                    self.event("ส่งรายงานสถานะไม่สำเร็จ: %s" % e, "red")
 
     def _arrange_later(self):
         """After a launch/rejoin: tile the windows once the new one has appeared (debounced; every launch restarts the wait)."""
@@ -1930,13 +1930,13 @@ class Engine:
         if self.stop.is_set():
             return
         try:
-            self.arrange_now("auto")
+            self.arrange_now("อัตโนมัติ")
         except Exception as e:
-            self.event("Window arrange error: %s" % e, "red")
+            self.event("เรียงหน้าต่างผิดพลาด: %s" % e, "red")
 
     def arrange_now(self, why):
         ok, msg = arrange_windows(self.cfg, [i.pkg for i in self.insts])
-        self.event("Arrange windows (%s): " % why + msg, "cyan" if ok else "yellow")
+        self.event("เรียงหน้าต่าง (%s): " % why + msg, "cyan" if ok else "yellow")
 
     def guard_tick(self):
         """Clear stacked/overlapping windows: error dialogs, duplicate tasks (debounced), stray apps on top."""
@@ -1955,14 +1955,14 @@ class Engine:
                 self._stack_last[p] = now
         info["stacked"] = confirmed
         if info["dialogs"] or confirmed or stray_pkg(self.cfg, info):
-            self.event("Stacked-window cleanup: " + ", ".join(screen_clear(self.cfg, info)), "yellow")
+            self.event("ล้างหน้าจอซ้อน: " + ", ".join(screen_clear(self.cfg, info)), "yellow")
 
     def clear_ram(self, why):
         ok, before, after = drop_ram(self.cfg.d["ram"]["kill_cached"], self.cfg)
         if ok:
-            self.event("RAM cleanup (%s): free %s → %s MB | %s" % (why, before, after, RAM_LAST["detail"]), "cyan")
+            self.event("ล้างแรม (%s): ว่าง %s → %s MB | %s" % (why, before, after, RAM_LAST["detail"]), "cyan")
         else:
-            self.event("RAM cleanup failed: %s" % RAM_LAST["detail"], "red")
+            self.event("ล้างแรมไม่สำเร็จ: %s" % RAM_LAST["detail"], "red")
 
     def _fps_txt(self, inst):
         rec = self.hb.latest(inst) if self.hb else None
@@ -1977,12 +1977,12 @@ class Engine:
         if shot is None and minutes is not None and ENV.root and w["send_screenshot"]:
             shot = take_shot("status")
         mem = mem_available_mb()
-        fields = [(i.label, "%s | rejoins %d | failures %d%s" % (STATE_LABEL.get(i.state, (i.state,))[0], i.rejoins, i.fails,
+        fields = [(i.label, "%s | รีจอย %d | ล้มเหลว %d%s" % (STATE_LABEL.get(i.state, (i.state,))[0], i.rejoins, i.fails,
                                                               (" | " + i.user) if i.user else "") + self._fps_txt(i)) for i in self.insts][:22]
-        fields.append(("Free RAM", ("%d MB" % mem) if mem is not None else "-"))
-        fields.append(("Uptime", fmt_dur(time.time() - self.t0)))
+        fields.append(("RAM ว่าง", ("%d MB" % mem) if mem is not None else "-"))
+        fields.append(("รันมาแล้ว", fmt_dur(time.time() - self.t0)))
         fields.append(("CPU", cpu_text()))
-        self.hook.send("status", "📸 Status report", "On-demand report" if minutes is None else "Periodic report every %d min" % minutes, fields, shot)
+        self.hook.send("status", "📸 รายงานสถานะ", "รายงานตามคำสั่ง" if minutes is None else "รายงานประจำทุก %d นาที" % minutes, fields, shot)
 
     # -- console commands (typed in the live panel)
     def _take_cmd(self, inst):
@@ -1993,11 +1993,11 @@ class Engine:
     def _manual(self, inst):
         cmd = self._take_cmd(inst)
         if cmd == "pause":
-            inst.paused, inst.state, inst.detail = True, "paused", "paused by command (type resume)"
-            self.event("%s: paused" % inst.label, "yellow")
+            inst.paused, inst.state, inst.detail = True, "paused", "หยุดชั่วคราวด้วยคำสั่ง (พิมพ์ resume)"
+            self.event("%s: หยุดชั่วคราว" % inst.label, "yellow")
         elif cmd in ("rejoin", "resume"):
             inst.paused, inst.fails, inst.ok_since = False, 0, None
-            self.event("%s: rejoin by command" % inst.label, "cyan")
+            self.event("%s: รีจอยด้วยคำสั่ง" % inst.label, "cyan")
             self._launch(inst, "rejoin", force=True)
 
     def _targets(self, arg):
@@ -2020,12 +2020,12 @@ class Engine:
             act = {"r": "rejoin", "p": "pause"}.get(cmd, cmd)
             ts = self._targets(args[0]) if args else []
             if not ts:
-                self.event("Usage: %s <instance number|all>" % cmd, "red")
+                self.event("ใช้: %s <เลขอินสแตนซ์|all>" % cmd, "red")
             else:
                 for i in ts:
                     i.cmd = act
                     i.wake.set()
-                self.event("%s instances %s" % (act, ", ".join(str(i.idx) for i in ts)), "cyan")
+                self.event("สั่ง %s อินสแตนซ์ %s" % (act, ", ".join(str(i.idx) for i in ts)), "cyan")
         elif cmd == "status":
             for i in self.insts:
                 self.event("#%d %s | %s" % (i.idx, STATE_LABEL.get(i.state, (i.state,))[0], i.detail or "-"))
@@ -2033,31 +2033,31 @@ class Engine:
             on = (not STREAMER["on"]) if not args else args[0] in ("on", "1", "yes", "y")
             STREAMER["on"] = self.cfg.d["ui"]["streamer_mode"] = on
             self.cfg.save()
-            self.event("Hide account names (streamer): " + ("on" if on else "off"), "cyan")
+            self.event("โหมดซ่อนชื่อบัญชี (streamer): " + ("เปิด" if on else "ปิด"), "cyan")
         elif cmd in ("ram", "shot", "clear", "arrange"):
             if not ENV.root:
-                self.event("Command %s needs root" % cmd, "red")
+                self.event("คำสั่ง %s ต้องใช้รูท" % cmd, "red")
             else:
                 threading.Thread(target=self._cmd_root, args=(cmd,), daemon=True).start()
         else:
-            self.event("Unknown command: %s (type help)" % cmd, "red")
+            self.event("ไม่รู้จักคำสั่ง: %s (พิมพ์ help)" % cmd, "red")
         return None
 
     def _cmd_root(self, cmd):
         try:
             if cmd == "ram":
-                self.clear_ram("command")
+                self.clear_ram("คำสั่ง")
             elif cmd == "arrange":
-                self.arrange_now("command")
+                self.arrange_now("คำสั่ง")
             elif cmd == "clear":
-                self.event("Screen cleanup: " + ", ".join(screen_clear(self.cfg, screen_scan(self.cfg), force_all=True)), "yellow")
+                self.event("ล้างหน้าจอ: " + ", ".join(screen_clear(self.cfg, screen_scan(self.cfg), force_all=True)), "yellow")
             else:
                 path = take_shot("console")
-                self.event("Saved screenshot: %s" % os.path.basename(path) if path else "Screenshot failed", "cyan" if path else "red")
+                self.event("บันทึกภาพหน้าจอ: %s" % os.path.basename(path) if path else "แคปหน้าจอไม่สำเร็จ", "cyan" if path else "red")
                 if path:
                     self.report(None, shot=path)
         except Exception as e:
-            self.event("Command %s failed: %s" % (cmd, e), "red")
+            self.event("คำสั่ง %s ผิดพลาด: %s" % (cmd, e), "red")
 
     # -- worker
     def _worker(self, inst):
@@ -2075,14 +2075,14 @@ class Engine:
                     elif not inst.paused:
                         self._tick(inst)
                 except Exception as e:
-                    self.event("%s: error %s" % (inst.label, e), "red")
+                    self.event("%s: ข้อผิดพลาด %s" % (inst.label, e), "red")
         except Exception as e:
-            self.event("%s: worker stopped because %s" % (inst.label, e), "red")
+            self.event("%s: worker หยุดเพราะ %s" % (inst.label, e), "red")
         inst.state = "stopped"
 
     def _launch(self, inst, kind, force=False):
         c = self.cfg.d
-        inst.state, inst.detail = "queued", "waiting for launch slot"
+        inst.state, inst.detail = "queued", "รอคิวเปิดแอป"
         with self.gate:
             wait = self.last_launch + max(0, int(c["launch_delay"])) - time.time()
             if wait > 0 and self.stop.wait(wait):
@@ -2096,17 +2096,17 @@ class Engine:
         self._arrange_later()
         inst.pres_at = 0.0
         inst.dlg_hits = 0
-        inst.state, inst.detail = "joining", "waiting to join the game"
+        inst.state, inst.detail = "joining", "รอเข้าเกม"
         if not ok:
-            self.event("%s: failed to open the game: %s" % (inst.label, msg), "red")
+            self.event("%s: เปิดเกมไม่สำเร็จ: %s" % (inst.label, msg), "red")
             return True
         if kind == "start":
-            self.event("%s: game opened" % inst.label, "green")
+            self.event("%s: เปิดเกมแล้ว" % inst.label, "green")
         else:
             inst.rejoins += 1
-            self.event("%s: rejoined (#%d)" % (inst.label, inst.rejoins), "cyan")
-            self.hook.send("rejoin", "🔁 Rejoined", inst.label,
-                           [("Package", inst.pkg), ("Account", inst.user or "-"), ("Count", str(inst.rejoins))])
+            self.event("%s: รีจอยแล้ว (ครั้งที่ %d)" % (inst.label, inst.rejoins), "cyan")
+            self.hook.send("rejoin", "🔁 รีจอยแล้ว", inst.label,
+                           [("แพ็กเกจ", inst.pkg), ("บัญชี", inst.user or "-"), ("ครั้งที่", str(inst.rejoins))])
         return True
 
     def presence(self, inst):
@@ -2117,7 +2117,7 @@ class Engine:
         if inst.uid is None:
             uid, name, err = who_am_i(inst.session)
             if not uid:
-                if err and "cookie" in err.lower():
+                if err and "คุกกี้" in err:
                     inst.cookie_bad = True
                     self.event("%s: %s" % (inst.label, err), "red")
                 return None
@@ -2149,7 +2149,7 @@ class Engine:
         if rec is None:
             return None  # script never reported: fall back to other signals
         if rec["ts"] < inst.launched_at:
-            return "stale", "no heartbeat yet since the game was reopened"
+            return "stale", "ยังไม่มี heartbeat หลังเปิดเกมใหม่"
         age = time.time() - rec["ts"]
         if rec.get("err") and age <= int(hc["timeout"]):
             return "err", "Disconnected: " + rec["err"]
@@ -2157,8 +2157,8 @@ class Engine:
             inst.user = rec["user"]
         who = (" [%s]" % rec["user"]) if rec["user"] else ""
         if age <= int(hc["timeout"]):
-            return "ok", "heartbeat %ds ago%s%s" % (age, who, (" | FPS " + rec["fps"] + cap_txt(rec)) if rec.get("fps") else "")
-        return "stale", "no heartbeat for %ds%s" % (age, who)
+            return "ok", "heartbeat %ds ก่อน%s%s" % (age, who, (" | FPS " + rec["fps"] + cap_txt(rec)) if rec.get("fps") else "")
+        return "stale", "ไม่มี heartbeat มา %ds%s" % (age, who)
 
     def check(self, inst):
         alive = proc_alive(inst.pkg)
@@ -2183,16 +2183,16 @@ class Engine:
             if hit and inst.dlg_hits >= int(self.cfg.d["dialog_detect"]["confirm"]):
                 return "disconnected", REASON["disconnected"]
             if hit:
-                return "ok", "abnormal window found, waiting for %d more confirmation(s)" % (int(self.cfg.d["dialog_detect"]["confirm"]) - inst.dlg_hits)
+                return "ok", "พบหน้าต่างผิดปกติ รอยืนยันอีก %d รอบ" % (int(self.cfg.d["dialog_detect"]["confirm"]) - inst.dlg_hits)
         pres = self.presence(inst)
         who = (" [%s]" % inst.user) if inst.user else ""
         if pres is True:
-            return "ok", "in the game" + who
+            return "ok", "อยู่ในเกม" + who
         if pres is False:
             return "notingame", REASON["notingame"] + who
         if alive:
-            return "ok", "app is running (no game status data)"
-        return "unknown", "unknown (non-root / no cookie)"
+            return "ok", "แอปทำงานอยู่ (ไม่มีข้อมูลสถานะเกม)"
+        return "unknown", "ไม่ทราบสถานะ (ไม่รูท/ไม่มีคุกกี้)"
 
     def _tick(self, inst):
         c = self.cfg.d
@@ -2205,7 +2205,7 @@ class Engine:
                 inst.ok_since = now
             if status == "ok" and inst.fails and now - inst.ok_since >= c["stable_reset"]:
                 inst.fails = 0
-                self.event("%s: stable for %ds, backoff reset" % (inst.label, c["stable_reset"]))
+                self.event("%s: เสถียรครบ %ds รีเซ็ต backoff" % (inst.label, c["stable_reset"]))
             tm = int(c["auto"]["timed_rejoin_min"])
             if tm > 0 and now - inst.launched_at >= tm * 60:
                 return self._recover(inst, "timed")
@@ -2225,11 +2225,11 @@ class Engine:
         if reason != "timed":
             inst.fails += 1
             delay = min(int(c["backoff_max"]), int(c["backoff_base"]) * 2 ** (inst.fails - 1))
-            self.event("%s: %s (#%d) rejoining in %ds" % (inst.label, REASON[reason], inst.fails, delay), "red")
+            self.event("%s: %s (ครั้งที่ %d) รีจอยใน %ds" % (inst.label, REASON[reason], inst.fails, delay), "red")
             shot = take_shot(inst.pkg) if c["auto"]["screenshot_on_crash"] else None
-            self.hook.send("crash", "⚠️ Dropped/frozen", inst.label,
-                           [("Reason", REASON[reason]), ("Package", inst.pkg), ("Account", inst.user or "-"),
-                            ("Consecutive failures", str(inst.fails)), ("Rejoin in", "%ds" % delay)], shot)
+            self.hook.send("crash", "⚠️ หลุด/ค้าง", inst.label,
+                           [("สาเหตุ", REASON[reason]), ("แพ็กเกจ", inst.pkg), ("บัญชี", inst.user or "-"),
+                            ("ล้มเหลวติดกัน", str(inst.fails)), ("รีจอยใน", "%ds" % delay)], shot)
         else:
             self.event("%s: %s" % (inst.label, REASON[reason]), "cyan")
         if delay:
@@ -2238,7 +2238,7 @@ class Engine:
                 if self.stop.is_set():
                     return
                 if self._take_cmd(inst) == "pause":
-                    inst.paused, inst.state, inst.detail = True, "paused", "paused by command (type resume)"
+                    inst.paused, inst.state, inst.detail = True, "paused", "หยุดชั่วคราวด้วยคำสั่ง (พิมพ์ resume)"
                     return
         self._launch(inst, "rejoin")
 
@@ -2248,14 +2248,14 @@ class Engine:
         mem = mem_available_mb()
         load = sys_load()
         head = Text.assemble(
-            ("Mode: ", "dim"), ("ROOT" if ENV.root else "non-root", "bold green" if ENV.root else "bold yellow"),
-            ("  |  check every %ds" % self.interval(), ""), ("  |  launch delay %ss" % self.cfg.d["launch_delay"], ""),
-            ("  |  uptime " + fmt_dur(now - self.t0), "bold"),
-            (("  |  free RAM %d MB" % mem) if mem is not None else "", ""),
-            (("  |  load %.1f" % load) if load is not None else "", ""),
-            ("\nType a command and press Enter (help = command list) | quit or Ctrl+C = stop and return to the menu", "dim"))
+            ("โหมด: ", "dim"), ("ROOT" if ENV.root else "ไม่รูท", "bold green" if ENV.root else "bold yellow"),
+            ("  |  ตรวจทุก %ds" % self.interval(), ""), ("  |  หน่วงเปิด %ss" % self.cfg.d["launch_delay"], ""),
+            ("  |  รันมา " + fmt_dur(now - self.t0), "bold"),
+            (("  |  RAM ว่าง %d MB" % mem) if mem is not None else "", ""),
+            (("  |  โหลด %.1f" % load) if load is not None else "", ""),
+            ("\nพิมพ์คำสั่งแล้วกด Enter (help = รายการคำสั่ง) | quit หรือ Ctrl+C = หยุดและกลับเมนู", "dim"))
         t = Table(box=box.SIMPLE_HEAVY, expand=True, header_style="bold cyan")
-        for col in ("#", "Package", "Account", "State", "Playing", "Failures", "Rejoins", "Next", "Details"):
+        for col in ("#", "แพ็กเกจ", "บัญชี", "สถานะ", "เล่นมา", "ล้มเหลว", "รีจอย", "ถัดไป", "รายละเอียด"):
             t.add_column(col, overflow="fold")
         for i in self.insts:
             label, style = STATE_LABEL.get(i.state, (i.state, ""))
@@ -2272,8 +2272,8 @@ class Engine:
         parts = [Panel(head, title="GARNT TOOL REJOIN", border_style="cyan"), t]
         if buf is not None:
             parts.append(Panel(Text.assemble(("› ", "bold yellow"), (scrub(buf), "bold"), ("█", "blink")),
-                               title="Console", border_style="yellow"))
-        parts.append(Panel(ev, title="Latest events (newest on top)", border_style="blue"))
+                               title="คอนโซล", border_style="yellow"))
+        parts.append(Panel(ev, title="เหตุการณ์ล่าสุด (ใหม่สุดอยู่บน)", border_style="blue"))
         return Group(*parts)
 
 
@@ -2295,15 +2295,15 @@ def ask(prompt, default=""):
 
 
 def confirm(prompt):
-    return ask(prompt + " (y/N)").lower() in ("y", "yes")
+    return ask(prompt + " (y/N)").lower() in ("y", "yes", "ใช่")
 
 
 def pause():
-    ask("Press Enter to return to the menu")
+    ask("กด Enter เพื่อกลับเมนู")
 
 
 def onoff(v):
-    return Text("On" if v else "Off", style="bold green" if v else "bold red")
+    return Text("เปิด" if v else "ปิด", style="bold green" if v else "bold red")
 
 
 def clear_screen():
@@ -2318,12 +2318,12 @@ def banner(cfg):
     console.print(Text("      T O O L   R E J O I N   •   ควายเผือก rejoin   •   v" + VERSION, style="bold magenta"))
     link = bool(cfg.d["game_link"])
     console.print(Text.assemble(
-        ("Mode: ", "dim"), ("ROOT" if ENV.root else "non-root", "bold green" if ENV.root else "bold yellow"),
-        ("   Instances: ", "dim"), (str(len(cfg.d["detected"])), "bold"),
-        ("   Game link: ", "dim"), ("set" if link else "not set", "green" if link else "red"),
-        ("   Webhook: ", "dim"), ("On" if cfg.d["webhook"]["enabled"] else "Off",
+        ("โหมด: ", "dim"), ("ROOT" if ENV.root else "ไม่รูท", "bold green" if ENV.root else "bold yellow"),
+        ("   อินสแตนซ์: ", "dim"), (str(len(cfg.d["detected"])), "bold"),
+        ("   ลิงก์เกม: ", "dim"), ("ตั้งแล้ว" if link else "ยังไม่ตั้ง", "green" if link else "red"),
+        ("   Webhook: ", "dim"), ("เปิด" if cfg.d["webhook"]["enabled"] else "ปิด",
                                   "green" if cfg.d["webhook"]["enabled"] else "red")))
-    console.print(Text("Folder: " + BASE, style="dim"))
+    console.print(Text("โฟลเดอร์: " + BASE, style="dim"))
     console.print()
 
 
@@ -2346,21 +2346,21 @@ def menu_start(cfg, hook):
     parsed = parse_link(cfg.d["game_link"])
     pkgs = selected_packages(cfg)
     if not parsed:
-        say("No game link set (or the link is invalid). Go to Menu 3 first", "red")
+        say("ยังไม่ได้ตั้งลิงก์เกม (หรือลิงก์ไม่ถูกต้อง) ไปที่เมนู 3 ก่อน", "red")
         return pause()
     if not pkgs:
-        say("No Roblox packages found. Go to Menu 4 to scan first", "red")
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
         return pause()
     if cfg.d["auto"]["cookie_pull_on_start"] and ENV.root:
         have = {p for p, _ in cookie_pairs(cfg)[0]}
         need = [p for p in pkgs if p not in have]
         if need:
-            say("Pulling cookies from the app for %d instance(s) that have none yet..." % len(need), "dim")
+            say("กำลังดึงคุกกี้จากแอป %d อินสแตนซ์ที่ยังไม่มีคุกกี้..." % len(need), "dim")
             got = {}
             for pkg, ck, name, msg in pull_validated(need):
                 if ck:
                     got[pkg] = ck
-                say("%s: %s" % (pkg, ("got the cookie of " + hide_name(name)) if ck else msg), "green" if ck else "yellow")
+                say("%s: %s" % (pkg, ("ได้คุกกี้ของ " + hide_name(name)) if ck else msg), "green" if ck else "yellow")
             if got:
                 store_cookies(cfg, got)
     if cfg.d["auto"]["cookie_login_on_start"]:
@@ -2369,7 +2369,7 @@ def menu_start(cfg, hook):
             for pkg, ok, msg in cookie_login(pairs):
                 say("%s: %s" % (pkg, msg), "green" if ok else "red")
         else:
-            say("Skipping cookie login: root required", "yellow")
+            say("ข้ามการล็อกอินด้วยคุกกี้: ต้องใช้รูท", "yellow")
     if cfg.d["autoexec"]["auto_create"]:
         report_autoexec(cfg, install_autoexec(cfg))
     cmap = dict(cookie_pairs(cfg)[0])
@@ -2383,9 +2383,9 @@ def menu_start(cfg, hook):
         hb.single = len(insts) == 1
         try:
             hbs.start()
-            say("Receiving heartbeat at 127.0.0.1:%d (test: curl http://127.0.0.1:%d/ping)" % (hbs.port, hbs.port), "green")
+            say("รับ heartbeat ที่ 127.0.0.1:%d (ทดสอบ: curl http://127.0.0.1:%d/ping)" % (hbs.port, hbs.port), "green")
         except OSError as e:
-            say("Cannot open the heartbeat port (%s), skipping heartbeat" % e, "red")
+            say("เปิดพอร์ต heartbeat ไม่ได้ (%s) ข้ามการใช้ heartbeat" % e, "red")
             hb = hbs = None
     if cfg.d["auto"]["wake_lock"]:
         wake_lock(True)
@@ -2400,12 +2400,12 @@ def menu_start(cfg, hook):
         run_live(eng.render, eng.console, 1.0 / rate)
     except KeyboardInterrupt:
         pass
-    say("\nStopping...", "yellow")
+    say("\nกำลังหยุด...", "yellow")
     eng.shutdown()
     chook.close()
     if hbs:
         hbs.stop()
-    say("Stopped", "green")
+    say("หยุดการทำงานแล้ว", "green")
     pause()
 
 
@@ -2414,26 +2414,26 @@ def status_view(cfg, info, buf=""):
     pairs, n_ck = info
     cmap = dict(pairs)
     fg = foreground_text() if ENV.root else ""
-    t = Table(title="Detected instances", box=box.ROUNDED, header_style="bold cyan", expand=True)
-    for col in ("#", "Package", "Selected", "Cookie", "Running", "On screen"):
+    t = Table(title="อินสแตนซ์ที่ตรวจพบ", box=box.ROUNDED, header_style="bold cyan", expand=True)
+    for col in ("#", "แพ็กเกจ", "เลือกรัน", "คุกกี้", "ทำงานอยู่", "อยู่หน้าจอ"):
         t.add_column(col)
     sel = selected_packages(cfg)
     for i, pkg in enumerate(det, 1):
         alive = proc_alive(pkg)
-        run = Text("Yes", style="green") if alive else (Text("No", style="red") if ENV.root else Text("Unknown", style="magenta"))
-        front = Text("-") if not ENV.root else (Text("Yes", style="green") if (pkg + "/") in fg else Text("No", style="dim"))
-        t.add_row(str(i), pkg, onoff(pkg in sel), Text("Yes" if pkg in cmap else "-"), run, front)
+        run = Text("ใช่", style="green") if alive else (Text("ไม่", style="red") if ENV.root else Text("ไม่ทราบ", style="magenta"))
+        front = Text("-") if not ENV.root else (Text("ใช่", style="green") if (pkg + "/") in fg else Text("ไม่", style="dim"))
+        t.add_row(str(i), pkg, onoff(pkg in sel), Text("มี" if pkg in cmap else "-"), run, front)
     mem, load = mem_available_mb(), sys_load()
-    foot = "Mode: %s | check every %ss | launch delay %ss | cookies in file: %d line(s) | free RAM %s MB | load %s%s" % (
-        "ROOT" if ENV.root else "non-root", cfg.d["check_interval"], cfg.d["launch_delay"], n_ck,
+    foot = "โหมด: %s | ตรวจทุก %ss | หน่วงเปิด %ss | คุกกี้ในไฟล์: %d บรรทัด | RAM ว่าง %s MB | โหลด %s%s" % (
+        "ROOT" if ENV.root else "ไม่รูท", cfg.d["check_interval"], cfg.d["launch_delay"], n_ck,
         mem if mem is not None else "?", ("%.1f" % load) if load is not None else "?",
-        "" if ENV.root else " | non-root mode cannot check processes/screen")
-    return Group(t, T(foot, "dim"), T("Live panel refreshes automatically — press Enter or Ctrl+C to return to the menu", "yellow"))
+        "" if ENV.root else " | โหมดไม่รูทตรวจโปรเซส/หน้าจอไม่ได้")
+    return Group(t, T(foot, "dim"), T("แผงสดรีเฟรชอัตโนมัติ — กด Enter หรือ Ctrl+C เพื่อกลับเมนู", "yellow"))
 
 
 def menu_status(cfg):
     if not cfg.d["detected"]:
-        say("No packages found. Try Menu 4 (scan packages)", "red")
+        say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
         return pause()
     info = cookie_pairs(cfg)
     pf = cfg.d["performance"]
@@ -2448,25 +2448,25 @@ def menu_settings(cfg):
     while True:
         banner(cfg)
         p = parse_link(cfg.d["game_link"])
-        t = Table(title="Settings", box=box.ROUNDED, header_style="bold cyan")
+        t = Table(title="ตั้งค่า", box=box.ROUNDED, header_style="bold cyan")
         t.add_column("#")
-        t.add_column("Item")
-        t.add_column("Current value")
+        t.add_column("รายการ")
+        t.add_column("ค่าปัจจุบัน")
         link = cfg.d["game_link"]
-        t.add_row("1", "Game link / Place ID", T((link[:60] + "…" if len(link) > 60 else link) or "(not set)"))
-        t.add_row("2", "Check interval (seconds)", str(cfg.d["check_interval"]))
-        t.add_row("3", "Delay between launching each instance (seconds)", str(cfg.d["launch_delay"]))
-        t.add_row("4", "Hide account names (streamer mode: first 4 characters, the rest #)", onoff(cfg.d["ui"]["streamer_mode"]))
+        t.add_row("1", "ลิงก์เกม / Place ID", T((link[:60] + "…" if len(link) > 60 else link) or "(ยังไม่ตั้ง)"))
+        t.add_row("2", "ช่วงเวลาตรวจสอบ (วินาที)", str(cfg.d["check_interval"]))
+        t.add_row("3", "หน่วงเวลาเปิดแต่ละอินสแตนซ์ (วินาที)", str(cfg.d["launch_delay"]))
+        t.add_row("4", "ซ่อนชื่อบัญชี (streamer mode: โชว์ 4 ตัวแรก ที่เหลือเป็น #)", onoff(cfg.d["ui"]["streamer_mode"]))
         console.print(t)
         if p:
-            say("Link actually used to open: " + p[0], "dim")
-        c = ask("Pick a number (0=back)")
+            say("ลิงก์ที่ใช้เปิดจริง: " + p[0], "dim")
+        c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c == "1":
-            v = ask("Paste the game link (roblox.com/games/..., private server link, share link or Place ID):")
+            v = ask("วางลิงก์เกม (roblox.com/games/..., ลิงก์ private server, ลิงก์แชร์ หรือ Place ID):")
             if v and not parse_link(v):
-                say("Invalid link format", "red")
+                say("รูปแบบลิงก์ไม่ถูกต้อง", "red")
                 pause()
             elif v:
                 cfg.d["game_link"] = v
@@ -2476,21 +2476,21 @@ def menu_settings(cfg):
             cfg.save()
         elif c in ("2", "3"):
             key, lo = ("check_interval", 10) if c == "2" else ("launch_delay", 0)
-            v = ask("New value (seconds, minimum %d):" % lo)
+            v = ask("ค่าใหม่ (วินาที, ต่ำสุด %d):" % lo)
             if v.isdigit() and int(v) >= lo:
                 cfg.d[key] = int(v)
                 cfg.save()
             elif v:
-                say("Must be a number >= %d" % lo, "red")
+                say("ต้องเป็นตัวเลข >= %d" % lo, "red")
                 pause()
 
 
 def menu_scan(cfg):
-    say("Scanning packages %s ..." % ", ".join(p + "*" for p in prefixes(cfg)), "cyan")
+    say("กำลังสแกนแพ็กเกจ %s ..." % ", ".join(p + "*" for p in prefixes(cfg)), "cyan")
     found = refresh_packages(cfg)
     if not found:
-        say("No packages found (if your instances use other names, type the package names yourself, separated by commas)", "red")
-        v = ask("Packages (Enter=skip):")
+        say("ไม่พบแพ็กเกจ (ถ้าอินสแตนซ์ใช้ชื่ออื่น พิมพ์ชื่อแพ็กเกจเองได้ คั่นด้วยคอมมา)", "red")
+        v = ask("แพ็กเกจ (Enter=ข้าม):")
         names = [x.strip() for x in v.split(",") if re.fullmatch(r"[\w.]+", x.strip())]
         if names:
             cfg.d["detected"] = names
@@ -2498,14 +2498,14 @@ def menu_scan(cfg):
             found = names
         else:
             return pause()
-    t = Table(title="Packages found", box=box.ROUNDED, header_style="bold cyan")
-    for col in ("#", "Package", "Selected"):
+    t = Table(title="แพ็กเกจที่พบ", box=box.ROUNDED, header_style="bold cyan")
+    for col in ("#", "แพ็กเกจ", "เลือกรัน"):
         t.add_column(col)
     sel = selected_packages(cfg)
     for i, p in enumerate(found, 1):
         t.add_row(str(i), p, onoff(p in sel))
     console.print(t)
-    v = ask("Choose which to run, e.g. 1,3 | all=everything | Enter=keep current:").lower()
+    v = ask("เลือกที่จะรัน เช่น 1,3 | all=ทั้งหมด | Enter=คงเดิม:").lower()
     if v == "all":
         cfg.d["packages"] = []
     elif v:
@@ -2513,35 +2513,35 @@ def menu_scan(cfg):
         if idx:
             cfg.d["packages"] = [found[i - 1] for i in sorted(set(idx))]
     cfg.save()
-    say("Saved", "green")
+    say("บันทึกแล้ว", "green")
     pause()
 
 
 def menu_cookie(cfg):
     if ensure_cookie_file():
-        say("Sample file created: " + COOKIE_PATH, "green")
+        say("สร้างไฟล์ตัวอย่างแล้ว: " + COOKIE_PATH, "green")
     pairs, n_ck = cookie_pairs(cfg)
     if not n_ck:
-        say("No cookies in cookie.txt yet  (1 line / 1 account, in instance order)\nFile: " + COOKIE_PATH, "yellow")
+        say("ยังไม่มีคุกกี้ใน cookie.txt  (1 บรรทัด / 1 บัญชี เรียงตามอินสแตนซ์)\nไฟล์: " + COOKIE_PATH, "yellow")
         return pause()
     det = cfg.d["detected"]
     if n_ck > len(det):
-        say("More cookies than instances (%d > %d), the extras will be skipped" % (n_ck, len(det)), "yellow")
-    t = Table(title="Cookies matched to instances (in order)", box=box.ROUNDED, header_style="bold cyan")
-    for col in ("Line", "Package", "Cookie", "Check"):
+        say("คุกกี้มากกว่าอินสแตนซ์ (%d > %d) ส่วนเกินจะถูกข้าม" % (n_ck, len(det)), "yellow")
+    t = Table(title="คุกกี้ที่จับคู่กับอินสแตนซ์ (ตามลำดับ)", box=box.ROUNDED, header_style="bold cyan")
+    for col in ("บรรทัด", "แพ็กเกจ", "คุกกี้", "ผลตรวจ"):
         t.add_column(col)
     valid = []
     for i, (pkg, ck) in enumerate(pairs, 1):
         uid, name, err = who_am_i(make_session(ck))
         if uid:
             valid.append((pkg, ck))
-        t.add_row(str(i), pkg, mask(ck), Text(("Valid: " + hide_name(name)) if uid else ("Invalid: " + str(err)),
+        t.add_row(str(i), pkg, mask(ck), Text(("ใช้ได้: " + hide_name(name)) if uid else ("ใช้ไม่ได้: " + str(err)),
                                               style="green" if uid else "red"))
     console.print(t)
     if not ENV.root:
-        say("Non-root mode: can only check cookies. Injecting cookies into the app needs root", "yellow")
+        say("โหมดไม่รูท: ตรวจคุกกี้ได้อย่างเดียว การใส่คุกกี้ลงแอปต้องใช้รูท", "yellow")
         return pause()
-    if valid and confirm("Inject %d valid cookie(s) into the apps (the apps will be force-stopped)?" % len(valid)):
+    if valid and confirm("ใส่คุกกี้ที่ใช้ได้ %d ตัวลงแอป (แอปจะถูก force-stop)?" % len(valid)):
         for pkg, ok, msg in cookie_login(valid):
             say("%s: %s" % (pkg, msg), "green" if ok else "red")
     pause()
@@ -2572,14 +2572,14 @@ def api_post(s, url, body=None):
     if r.status_code == 200:
         return True, "ok"
     if r.status_code == 401:
-        msg = "cookie expired"
+        msg = "คุกกี้หมดอายุ"
     elif r.status_code == 429:
-        msg = "too many requests, wait a moment"
+        msg = "ส่งถี่เกินไป รอสักพัก"
     if not msg and r.status_code not in (401, 429):
-        msg = scrub(" ".join((r.text or "").split()))[:70] or "(empty response body)"
+        msg = scrub(" ".join((r.text or "").split()))[:70] or "(เนื้อหาตอบกลับว่าง)"
     if r.status_code == 403:
-        msg += " [csrf: " + ("token resent and still rejected" if retried else
-                             "server did not send a token") + "]"
+        msg += " [csrf: " + ("ส่งโทเคนซ้ำแล้วยังไม่ผ่าน" if retried else
+                             "เซิร์ฟเวอร์ไม่ส่งโทเคนมา") + "]"
     return False, ("HTTP %d %s" % (r.status_code, msg)).strip()
 
 
@@ -2609,14 +2609,14 @@ SOCIAL_URL = {"block": "https://apis.roblox.com/user-blocking-api/v1/users/%d/bl
               "unblock": "https://apis.roblox.com/user-blocking-api/v1/users/%d/unblock-user",
               "friend": "https://friends.roblox.com/v1/users/%d/request-friendship",
               "accept": "https://friends.roblox.com/v1/users/%d/accept-friend-request"}
-SOCIAL_NAME = {"block": "Block", "unblock": "Unblock", "friend": "Send friend request to"}
+SOCIAL_NAME = {"block": "บล็อก", "unblock": "เลิกบล็อก", "friend": "ส่งคำขอเป็นเพื่อน"}
 
 SOCIAL_LEGACY = {"block": "https://accountsettings.roblox.com/v1/users/%d/block",
                  "unblock": "https://accountsettings.roblox.com/v1/users/%d/unblock"}
 
 
 def ensure_tracker(s, uid=0, force_fake=False):
-    """Make the session carry the RBXEventTrackerV2 (browserid) cookie that apis.roblox.com uses as BrowserTrackerID: ask the server first, create one ourselves if that fails"""
+    """ให้เซสชันมีคุกกี้ RBXEventTrackerV2 (browserid) ที่ apis.roblox.com ใช้เป็น BrowserTrackerID: ขอจากเซิร์ฟเวอร์ก่อน ไม่ได้ก็สร้างเอง"""
     if not force_fake:
         if any(c.name == "RBXEventTrackerV2" for c in s.cookies):
             return
@@ -2637,7 +2637,7 @@ def ensure_tracker(s, uid=0, force_fake=False):
 
 
 def is_blocking(s, tid):
-    """True/False/None (unknown): whether this account has tid in its block list"""
+    """True/False/None(ไม่ทราบ): บัญชีนี้มี tid อยู่ในรายการที่บล็อกไว้หรือไม่"""
     cursor = ""
     try:
         for _ in range(10):
@@ -2657,7 +2657,7 @@ def is_blocking(s, tid):
 
 
 def social_call(s, action, tid, uid=0):
-    """Block/unblock/friend -> (ok, message). Uses user-blocking-api first, falls back to the old URL on 404"""
+    """บล็อก/เลิกบล็อก/เพื่อน -> (ok, ข้อความ) ใช้ user-blocking-api ก่อน ถ้าได้ 404 ค่อยลอง URL เก่า"""
     body = {} if action != "friend" else None
     web = "apis.roblox.com" in SOCIAL_URL[action]
     if web:
@@ -2669,11 +2669,11 @@ def social_call(s, action, tid, uid=0):
     if web and not ok and msg.startswith("HTTP 400") and action in ("block", "unblock"):
         st = is_blocking(s, tid)
         if st is True and action == "block":
-            return True, "already blocked (checked from the block list)"
+            return True, "บล็อกอยู่แล้ว (ตรวจจากรายการบล็อก)"
         if st is False and action == "unblock":
-            return True, "not blocked, nothing to do"
+            return True, "ไม่ได้บล็อกอยู่ ไม่ต้องทำอะไร"
         if st is not None:
-            msg += " [block list checked: " + ("blocked" if st else "not blocked") + "]"
+            msg += " [ตรวจรายการบล็อกแล้ว: " + ("บล็อกอยู่" if st else "ไม่ได้บล็อก") + "]"
     if not ok and msg.startswith("HTTP 404") and action in SOCIAL_LEGACY:
         ok2, msg2 = api_post(s, SOCIAL_LEGACY[action] % tid, body)
         if ok2:
@@ -2691,12 +2691,12 @@ def social_accounts(cfg):
         if uid:
             out.append((pkg, s, uid, name))
         else:
-            say("%s: cookie unusable (%s)" % (pkg, err), "red")
+            say("%s: คุกกี้ใช้ไม่ได้ (%s)" % (pkg, err), "red")
     return out
 
 
 def pick_accounts(accts):
-    v = ask("Choose accounts (e.g. 1,3 or all, Enter=all):").strip().lower()
+    v = ask("เลือกบัญชี (เช่น 1,3 หรือ all, Enter=all):").strip().lower()
     if v in ("", "all", "a"):
         return list(accts)
     idx = {int(x) for x in v.replace(" ", "").split(",") if x.isdigit()}
@@ -2708,7 +2708,7 @@ def run_social(action, accts, tid):
     rows = []
     for pkg, s, uid, name in accts:
         if uid == tid:
-            rows.append((pkg, name, False, "same account as the target, skipped"))
+            rows.append((pkg, name, False, "เป็นบัญชีเดียวกับเป้าหมาย ข้าม"))
             continue
         ok, msg = social_call(s, action, tid, uid)
         rows.append((pkg, name, ok, msg))
@@ -2718,7 +2718,7 @@ def run_social(action, accts, tid):
 
 def show_social(rows):
     t = Table(box=box.ROUNDED, header_style="bold cyan")
-    for col in ("Package", "Account", "Result"):
+    for col in ("แพ็กเกจ", "บัญชี", "ผล"):
         t.add_column(col)
     for pkg, name, ok, msg in rows:
         t.add_row(pkg, hide_name(name), Text(("✓ " if ok else "✗ ") + msg, style="green" if ok else "red"))
@@ -2727,19 +2727,19 @@ def show_social(rows):
 
 def pick_target(accts):
     """Target of block/unblock/friend: one of the cookie accounts, or a typed username / ID (both kept). -> (id, name)"""
-    src = ask("Pick the target from: 1=accounts in cookies, 2=type a Roblox name/ID (Enter=1):").strip()
+    src = ask("เลือกเป้าหมายจาก: 1=บัญชีในคุกกี้, 2=พิมพ์ชื่อ/ID Roblox (Enter=1):").strip()
     if src in ("", "1"):
-        v = ask("Pick the target account number (from the table above):").strip()
+        v = ask("เลือกเลขบัญชีเป้าหมาย (ตามตารางด้านบน):").strip()
         if v.isdigit() and 1 <= int(v) <= len(accts):
             a = accts[int(v) - 1]
             return a[2], a[3]
         return None, None
-    who = ask("Target username or User ID:")
+    who = ask("ชื่อผู้ใช้หรือ User ID เป้าหมาย:")
     return resolve_user(accts[0][1], who) if who else (None, None)
 
 
 def blocked_ids(s):
-    """Set of User IDs this account has blocked, or None if it cannot be read"""
+    """ชุด User ID ที่บัญชีนี้บล็อกไว้ หรือ None ถ้าอ่านไม่ได้"""
     out, cursor = set(), ""
     try:
         for _ in range(40):
@@ -2758,21 +2758,21 @@ def blocked_ids(s):
 
 
 def block_each_other(cfg, accts):
-    """Every account in the cookies blocks every other one (both directions), no target to pick"""
+    """ทุกบัญชีในคุกกี้บล็อกกันเองทุกคู่ (ทั้งสองทิศ) ไม่ต้องเลือกเป้าหมาย"""
     seen = set()
-    accts = [a for a in accts if not (a[2] in seen or seen.add(a[2]))]   # two cookies of the same account count once
+    accts = [a for a in accts if not (a[2] in seen or seen.add(a[2]))]   # คุกกี้สองตัวของบัญชีเดียวกัน นับครั้งเดียว
     n = len(accts)
     if n < 2:
-        say("Need at least 2 usable accounts", "red")
+        say("ต้องมีบัญชีที่ใช้ได้อย่างน้อย 2 บัญชี", "red")
         return pause()
     try:
         gap = max(0, int(cfg.d.get("block_gap_sec", 20)))
     except (TypeError, ValueError):
         gap = 20
     est = max(1, int(round((n - 1) * max(gap, n * 1.0) / 60.0)))
-    if not confirm("Mutual block of %d accounts (%d blocks), takes about %d min?" % (n, n * (n - 1), est)):
+    if not confirm("บล็อกกันเอง %d บัญชี (%d การบล็อก) ใช้เวลาประมาณ %d นาที?" % (n, n * (n - 1), est)):
         return
-    say("Reading each account's block list...", "dim")
+    say("กำลังอ่านรายการบล็อกของแต่ละบัญชี...", "dim")
     have = []
     for pkg, s, uid, name in accts:
         ensure_tracker(s, uid)
@@ -2781,7 +2781,7 @@ def block_each_other(cfg, accts):
     fails, last = [], [0.0] * n
     try:
         for k in range(1, n):
-            say("Round %d/%d" % (k, n - 1), "bold")
+            say("รอบ %d/%d" % (k, n - 1), "bold")
             for i in range(n):
                 j = (i + k) % n
                 pkg, s, uid, name = accts[i]
@@ -2799,7 +2799,7 @@ def block_each_other(cfg, accts):
                     last[i] = time.time()
                     if ok or not msg.startswith("HTTP 429") or attempt == 2:
                         break
-                    say("%s: rate limited (429), waiting 60 seconds then retrying" % pkg, "yellow")
+                    say("%s: ส่งถี่เกิน (429) รอ 60 วินาทีแล้วลองใหม่" % pkg, "yellow")
                     time.sleep(60)
                 say("  %s → %s: %s" % (pkg, hide_name(tname), ("✓ " if ok else "✗ ") + msg), "green" if ok else "red")
                 if ok:
@@ -2809,34 +2809,34 @@ def block_each_other(cfg, accts):
                     fails.append((pkg, tname, msg))
                 time.sleep(1)
     except KeyboardInterrupt:
-        say("Stopped (Ctrl+C), summary of what was done so far", "yellow")
+        say("หยุดแล้ว (Ctrl+C) สรุปเท่าที่ทำไปแล้ว", "yellow")
     t = Table(box=box.ROUNDED, header_style="bold cyan")
-    for col in ("Package", "Account", "Result"):
+    for col in ("แพ็กเกจ", "บัญชี", "ผล"):
         t.add_column(col)
     for (pkg, _, _, name), (a, b, c) in zip(accts, stats):
-        t.add_row(pkg, hide_name(name), Text("newly blocked %d | already blocked %d | failed %d" % (a, b, c),
+        t.add_row(pkg, hide_name(name), Text("บล็อกใหม่ %d | บล็อกอยู่แล้ว %d | ล้ม %d" % (a, b, c),
                                              style="green" if c == 0 else "red"))
     console.print(t)
     for pkg, tname, msg in fails[:8]:
         say("%s → %s: %s" % (pkg, hide_name(tname), msg), "red")
     if len(fails) > 8:
-        say("...and %d more" % (len(fails) - 8), "red")
+        say("...และอีก %d รายการ" % (len(fails) - 8), "red")
     pause()
 
 
 def unblock_each_other(cfg, accts):
-    """Every account in the cookies unblocks the others (only pairs that are actually blocked), other block-list entries are untouched"""
+    """ทุกบัญชีในคุกกี้ปลดบล็อกกันเอง (เฉพาะคู่ที่บล็อกกันอยู่จริง) ไม่แตะรายการบล็อกอื่น"""
     seen = set()
-    accts = [a for a in accts if not (a[2] in seen or seen.add(a[2]))]   # two cookies of the same account count once
+    accts = [a for a in accts if not (a[2] in seen or seen.add(a[2]))]   # คุกกี้สองตัวของบัญชีเดียวกัน นับครั้งเดียว
     n = len(accts)
     if n < 2:
-        say("Need at least 2 usable accounts", "red")
+        say("ต้องมีบัญชีที่ใช้ได้อย่างน้อย 2 บัญชี", "red")
         return pause()
     try:
         gap = max(0, int(cfg.d.get("block_gap_sec", 20)))
     except (TypeError, ValueError):
         gap = 20
-    say("Reading each account's block list...", "dim")
+    say("กำลังอ่านรายการบล็อกของแต่ละบัญชี...", "dim")
     have = []
     for pkg, s, uid, name in accts:
         ensure_tracker(s, uid)
@@ -2848,10 +2848,10 @@ def unblock_each_other(cfg, accts):
     per = [sum(1 for j in range(n) if todo(i, j)) for i in range(n)]
     total = sum(per)
     if not total:
-        say("No pair is blocking each other, nothing to do", "green")
+        say("ไม่มีคู่ไหนบล็อกกันอยู่ ไม่ต้องทำอะไร", "green")
         return pause()
     est = max(1, int(round(max(per) * gap / 60.0)))
-    if not confirm("Mutual unblock of %d pair(s) (directions), takes about %d min?" % (total, est)):
+    if not confirm("ปลดบล็อกกันเอง %d คู่ (ทิศทาง) ใช้เวลาประมาณ %d นาที?" % (total, est)):
         return
     stats = [[0, n - 1 - per[i], 0] for i in range(n)]      # unblocked, not blocked (skipped), failed
     fails, last = [], [0.0] * n
@@ -2859,7 +2859,7 @@ def unblock_each_other(cfg, accts):
         for k in range(1, n):
             if not any(todo(i, (i + k) % n) for i in range(n)):
                 continue
-            say("Round %d/%d" % (k, n - 1), "bold")
+            say("รอบ %d/%d" % (k, n - 1), "bold")
             for i in range(n):
                 j = (i + k) % n
                 if not todo(i, j):
@@ -2874,7 +2874,7 @@ def unblock_each_other(cfg, accts):
                     last[i] = time.time()
                     if ok or not msg.startswith("HTTP 429") or attempt == 2:
                         break
-                    say("%s: rate limited (429), waiting 60 seconds then retrying" % pkg, "yellow")
+                    say("%s: ส่งถี่เกิน (429) รอ 60 วินาทีแล้วลองใหม่" % pkg, "yellow")
                     time.sleep(60)
                 say("  %s → %s: %s" % (pkg, hide_name(tname), ("✓ " if ok else "✗ ") + msg), "green" if ok else "red")
                 if ok:
@@ -2884,26 +2884,26 @@ def unblock_each_other(cfg, accts):
                     fails.append((pkg, tname, msg))
                 time.sleep(1)
     except KeyboardInterrupt:
-        say("Stopped (Ctrl+C), summary of what was done so far", "yellow")
+        say("หยุดแล้ว (Ctrl+C) สรุปเท่าที่ทำไปแล้ว", "yellow")
     t = Table(box=box.ROUNDED, header_style="bold cyan")
-    for col in ("Package", "Account", "Result"):
+    for col in ("แพ็กเกจ", "บัญชี", "ผล"):
         t.add_column(col)
     for (pkg, _, _, name), (a, b, c) in zip(accts, stats):
-        t.add_row(pkg, hide_name(name), Text("unblocked %d | not blocked %d | failed %d" % (a, b, c),
+        t.add_row(pkg, hide_name(name), Text("ปลดบล็อก %d | ไม่ได้บล็อกอยู่ %d | ล้ม %d" % (a, b, c),
                                              style="green" if c == 0 else "red"))
     console.print(t)
     for pkg, tname, msg in fails[:8]:
         say("%s → %s: %s" % (pkg, hide_name(tname), msg), "red")
     if len(fails) > 8:
-        say("...and %d more" % (len(fails) - 8), "red")
+        say("...และอีก %d รายการ" % (len(fails) - 8), "red")
     pause()
 
 
 def launch_all_roblox(cfg):
-    """Open every selected Roblox instance one at a time, waiting open_all_delay seconds (default 10) between them"""
+    """เปิด Roblox ทุกอินสแตนซ์ที่เลือกทีละตัว หน่วง open_all_delay วินาที (ค่าเริ่มต้น 10) ระหว่างตัว"""
     pkgs = selected_packages(cfg)
     if not pkgs:
-        say("No Roblox packages found. Go to Menu 4 to scan first", "red")
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
         return pause()
     try:
         delay = max(0, int(cfg.d.get("open_all_delay", 10)))
@@ -2911,9 +2911,9 @@ def launch_all_roblox(cfg):
         delay = 10
     parsed = parse_link(cfg.d["game_link"])
     uri = parsed[0] if parsed else None
-    say("Will open the game from the configured link" if uri else
-        "No game link set, will only open the Roblox app", "dim")
-    if not confirm("Open %d Roblox instance(s), %d seconds apart?" % (len(pkgs), delay)):
+    say("จะเปิดเกมตามลิงก์ที่ตั้งไว้" if uri else
+        "ยังไม่ได้ตั้งลิงก์เกม จะเปิดแค่แอป Roblox", "dim")
+    if not confirm("เปิด Roblox %d อินสแตนซ์ ห่างกันตัวละ %d วินาที?" % (len(pkgs), delay)):
         return
     done = 0
     try:
@@ -2927,76 +2927,76 @@ def launch_all_roblox(cfg):
             done += 1 if ok else 0
             say("[%d/%d] %s: %s" % (i, len(pkgs), pkg, msg), "green" if ok else "red")
             if i < len(pkgs) and delay:
-                say("Waiting %d seconds before the next one..." % delay, "dim")
+                say("รอ %d วินาทีก่อนเปิดตัวถัดไป..." % delay, "dim")
                 time.sleep(delay)
     except KeyboardInterrupt:
-        say("Stopped (Ctrl+C)", "yellow")
-    say("Opened %d/%d instances" % (done, len(pkgs)), "green" if done == len(pkgs) else "yellow")
+        say("หยุดแล้ว (Ctrl+C)", "yellow")
+    say("เปิดสำเร็จ %d/%d อินสแตนซ์" % (done, len(pkgs)), "green" if done == len(pkgs) else "yellow")
     pause()
 
 
 def menu_open_all(cfg):
     while True:
         banner(cfg)
-        t = Table(title="Open all Roblox", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "Item", "Value"):
+        t = Table(title="เปิด Roblox ทั้งหมด", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
             t.add_column(col)
-        t.add_row("1", "Open every selected Roblox instance now (one by one, no force-stop)", "")
-        t.add_row("2", "Delay between instances (seconds, 0-600)", str(cfg.d.get("open_all_delay", 10)))
+        t.add_row("1", "เปิด Roblox ทุกอินสแตนซ์ที่เลือกตอนนี้ (ทีละตัว ไม่ force-stop)", "")
+        t.add_row("2", "หน่วงระหว่างตัว (วินาที, 0-600)", str(cfg.d.get("open_all_delay", 10)))
         console.print(t)
-        c = ask("Pick a number (0=back)")
+        c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c == "1":
             launch_all_roblox(cfg)
         elif c == "2":
-            v = ask("New delay (0-600):")
+            v = ask("ค่าหน่วงใหม่ (0-600):")
             if v.isdigit() and 0 <= int(v) <= 600:
                 cfg.d["open_all_delay"] = int(v)
                 cfg.save()
             elif v:
-                say("Value must be between 0 and 600", "red")
+                say("ค่าต้องอยู่ระหว่าง 0-600", "red")
                 pause()
 
 
 def menu_social(cfg):
     if not cookie_pairs(cfg)[0]:
-        say("No cookies in cookie.txt yet (Menu 5)", "red")
+        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)", "red")
         return pause()
-    say("Checking accounts from the cookies...", "dim")
+    say("กำลังตรวจบัญชีจากคุกกี้...", "dim")
     accts = social_accounts(cfg)
     if not accts:
         return pause()
     while True:
         banner(cfg)
-        t = Table(title="Block / friends (using accounts from the cookies)", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "Item"):
+        t = Table(title="บล็อก / เพื่อน (ด้วยบัญชีจากคุกกี้)", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ"):
             t.add_column(col)
-        t.add_row("1", "Block a user")
-        t.add_row("2", "Unblock a user")
-        t.add_row("3", "Add friend (send a request to a user)")
-        t.add_row("4", "Add friends between our own accounts (send request + auto-accept)")
-        t.add_row("5", "Mutual block (every account in the cookies blocks the others, no target to pick)")
-        t.add_row("6", "Mutual unblock (every account in the cookies unblocks the others, only pairs that block each other)")
+        t.add_row("1", "บล็อกผู้ใช้")
+        t.add_row("2", "เลิกบล็อกผู้ใช้")
+        t.add_row("3", "เพิ่มเพื่อน (ส่งคำขอไปยังผู้ใช้)")
+        t.add_row("4", "เพิ่มเพื่อนระหว่างบัญชีของเราเอง (ส่งคำขอ + กดรับให้อัตโนมัติ)")
+        t.add_row("5", "บล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้บล็อกกันเอง ไม่ต้องเลือกเป้าหมาย)")
+        t.add_row("6", "ปลดบล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้ปลดบล็อกกันเอง เฉพาะคู่ที่บล็อกกันอยู่)")
         console.print(t)
         a = Table(box=box.SIMPLE, header_style="bold cyan")
-        for col in ("#", "Package", "Account"):
+        for col in ("#", "แพ็กเกจ", "บัญชี"):
             a.add_column(col)
         for n, (pkg, _, _, name) in enumerate(accts, 1):
             a.add_row(str(n), pkg, hide_name(name))
         console.print(a)
-        c = ask("Pick a number (0=back)")
+        c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c in ("1", "2", "3"):
             action = {"1": "block", "2": "unblock", "3": "friend"}[c]
             tid, tname = pick_target(accts)
             if not tid:
-                say("Target not found", "red")
+                say("ไม่พบเป้าหมายนี้", "red")
                 pause()
                 continue
             sel = pick_accounts(accts)
-            if sel and confirm("%s %s (%d) with %d account(s)?" % (SOCIAL_NAME[action], hide_name(tname), tid, len(sel))):
+            if sel and confirm("%s %s (%d) ด้วย %d บัญชี?" % (SOCIAL_NAME[action], hide_name(tname), tid, len(sel))):
                 show_social(run_social(action, sel, tid))
                 pause()
         elif c == "6":
@@ -3006,10 +3006,10 @@ def menu_social(cfg):
         elif c == "4":
             sel = pick_accounts(accts)
             if len(sel) < 2:
-                say("Select at least 2 accounts", "red")
+                say("ต้องเลือกอย่างน้อย 2 บัญชี", "red")
                 pause()
                 continue
-            if not confirm("Add friends between %d accounts?" % len(sel)):
+            if not confirm("เพิ่มเพื่อนระหว่าง %d บัญชี?" % len(sel)):
                 continue
             rows = []
             for i in range(len(sel)):
@@ -3027,41 +3027,41 @@ def menu_social(cfg):
 
 def menu_cookie_pull(cfg):
     if not ENV.root:
-        say("Pulling cookies from the app needs root", "yellow")
+        say("การดึงคุกกี้จากแอปต้องใช้สิทธิ์รูท", "yellow")
         return pause()
     det = cfg.d["detected"]
     if not det:
-        say("No packages found. Try Menu 4 (scan packages)", "red")
+        say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
         return pause()
-    say("Reading cookies from %d app instance(s), then checking with the Roblox API..." % len(det), "dim")
+    say("กำลังอ่านคุกกี้จากแอป %d อินสแตนซ์ แล้วตรวจกับ Roblox API..." % len(det), "dim")
     results = pull_validated(det)
-    t = Table(title="Cookies pulled from the Roblox apps", box=box.ROUNDED, header_style="bold cyan")
-    for col in ("#", "Package", "Account", "Result"):
+    t = Table(title="คุกกี้ที่ดึงจากแอป Roblox", box=box.ROUNDED, header_style="bold cyan")
+    for col in ("#", "แพ็กเกจ", "บัญชี", "ผล"):
         t.add_column(col)
     found = {}
     for i, (pkg, ck, name, msg) in enumerate(results, 1):
         if ck:
             found[pkg] = ck
         t.add_row(str(i), pkg, hide_name(name) if name else "-",
-                  Text(("Pulled, valid: " + mask(ck)) if ck else msg, style="green" if ck else "red"))
+                  Text(("ดึงได้ ใช้ได้: " + mask(ck)) if ck else msg, style="green" if ck else "red"))
     console.print(t)
-    if found and confirm("Save %d cookie(s) to cookie.txt (replacing that instance's line)?" % len(found)):
+    if found and confirm("บันทึก %d ตัวลง cookie.txt (แทนที่บรรทัดของอินสแตนซ์นั้น)?" % len(found)):
         n = store_cookies(cfg, found)
-        say("Saved %d line(s) → " % n + COOKIE_PATH, "green")
-        say("When rejoining, these cookies are used to check in-game status via the API (turn on \"Check in-game status via Roblox API\" at Menu 6)", "dim")
+        say("บันทึกแล้ว %d บรรทัด → " % n + COOKIE_PATH, "green")
+        say("ตอนรีจอยจะใช้คุกกี้เหล่านี้เช็คสถานะในเกมผ่าน API (เปิด \"ตรวจสถานะในเกมผ่าน Roblox API\" ที่เมนู 6)", "dim")
     pause()
 
 
 def menu_cookie_hub(cfg):
     while True:
         banner(cfg)
-        t = Table(title="Cookies", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "Item"):
+        t = Table(title="คุกกี้", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ"):
             t.add_column(col)
-        t.add_row("1", "Check / inject cookies from cookie.txt into the apps (cookie login)")
-        t.add_row("2", "Pull cookies from the Roblox apps into cookie.txt (to check status via the API) — root")
+        t.add_row("1", "ตรวจ / ใส่คุกกี้จาก cookie.txt ลงแอป (ล็อกอินด้วยคุกกี้)")
+        t.add_row("2", "ดึงคุกกี้จากแอป Roblox มาเก็บใน cookie.txt (ไว้เช็คสถานะผ่าน API) — รูท")
         console.print(t)
-        c = ask("Pick a number (0=back)")
+        c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c == "1":
@@ -3071,14 +3071,14 @@ def menu_cookie_hub(cfg):
 
 
 AUTO_ITEMS = [
-    ("start_on_launch", "Start rejoining as soon as the tool opens", False),
-    ("wake_lock", "Enable wake-lock while running", False),
-    ("force_stop", "Force-stop before reopening the game", True),
-    ("foreground_check", "Check that the app is on screen", True),
-    ("screenshot_on_crash", "Take a screenshot on drop/freeze", True),
-    ("cookie_login_on_start", "Log in with cookies automatically before starting", True),
-    ("presence_check", "Check in-game status via Roblox API (needs cookies)", False),
-    ("cookie_pull_on_start", "Pull cookies from the apps automatically before starting (only instances without a cookie)", True),
+    ("start_on_launch", "เริ่มรีจอยทันทีเมื่อเปิดเครื่องมือ", False),
+    ("wake_lock", "เปิด Wake-lock ขณะรัน", False),
+    ("force_stop", "Force-stop ก่อนเปิดเกมใหม่", True),
+    ("foreground_check", "ตรวจว่าแอปอยู่หน้าจอ", True),
+    ("screenshot_on_crash", "แคปหน้าจอเมื่อหลุด/ค้าง", True),
+    ("cookie_login_on_start", "ล็อกอินด้วยคุกกี้อัตโนมัติก่อนเริ่ม", True),
+    ("presence_check", "ตรวจสถานะในเกมผ่าน Roblox API (ต้องมีคุกกี้)", False),
+    ("cookie_pull_on_start", "ดึงคุกกี้จากแอปมาเก็บอัตโนมัติก่อนเริ่ม (เฉพาะอินสแตนซ์ที่ยังไม่มีคุกกี้)", True),
 ]
 
 
@@ -3086,18 +3086,18 @@ def menu_auto(cfg):
     a = cfg.d["auto"]
     while True:
         banner(cfg)
-        t = Table(title="Auto settings", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "Item", "Value", "Note"):
+        t = Table(title="ตั้งค่าอัตโนมัติ", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า", "หมายเหตุ"):
             t.add_column(col)
         for i, (k, label, root_only) in enumerate(AUTO_ITEMS, 1):
-            t.add_row(str(i), label, onoff(a[k]), "Root only" if root_only else "")
+            t.add_row(str(i), label, onoff(a[k]), "เฉพาะรูท" if root_only else "")
         n = len(AUTO_ITEMS)
-        t.add_row(str(n + 1), "Timed rejoin (minutes, 0=off)", str(a["timed_rejoin_min"]), "")
-        t.add_row(str(n + 2), "Time to wait for joining after opening the app (seconds)", str(cfg.d["join_grace"]), "")
-        t.add_row(str(n + 3), "Heartbeat (in-game script) ...", onoff(cfg.d["heartbeat"]["enabled"]), "Submenu")
-        t.add_row(str(n + 4), "Performance: RAM cleanup / lower CPU usage ...", "", "Submenu")
+        t.add_row(str(n + 1), "รีจอยตามเวลา (นาที, 0=ปิด)", str(a["timed_rejoin_min"]), "")
+        t.add_row(str(n + 2), "เวลารอเข้าเกมหลังเปิดแอป (วินาที)", str(cfg.d["join_grace"]), "")
+        t.add_row(str(n + 3), "Heartbeat (สคริปต์ในเกม) ...", onoff(cfg.d["heartbeat"]["enabled"]), "เมนูย่อย")
+        t.add_row(str(n + 4), "ประสิทธิภาพ: ล้างแรม / ลดการใช้ CPU ...", "", "เมนูย่อย")
         console.print(t)
-        c = ask("Pick a number to toggle/edit (0=back)")
+        c = ask("เลือกหมายเลขเพื่อสลับ/แก้ไข (0=กลับ)")
         if c == "0":
             return
         if c.isdigit() and 1 <= int(c) <= n:
@@ -3109,7 +3109,7 @@ def menu_auto(cfg):
         elif c == str(n + 4):
             menu_perf(cfg)
         elif c in (str(n + 1), str(n + 2)):
-            v = ask("New value (number):")
+            v = ask("ค่าใหม่ (ตัวเลข):")
             if v.isdigit():
                 if c == str(n + 1):
                     a["timed_rejoin_min"] = int(v)
@@ -3121,8 +3121,8 @@ def menu_auto(cfg):
 def fps_cap_summary(cfg):
     default, caps = fps_caps(cfg)
     if not default and not caps:
-        return "not set"
-    return "%d account(s), default %s" % (len(caps), default or "leave alone")
+        return "ไม่ตั้ง"
+    return "%d บัญชี, ค่าเริ่มต้น %s" % (len(caps), default or "ไม่แตะ")
 
 
 def read_cap(prompt, allow_zero=False):
@@ -3132,7 +3132,7 @@ def read_cap(prompt, allow_zero=False):
         return True, None
     if v.isdigit() and (FPS_CAP_MIN <= int(v) <= FPS_CAP_MAX or (allow_zero and int(v) == 0)):
         return True, int(v)
-    say("Value must be between %d and %d" % (FPS_CAP_MIN, FPS_CAP_MAX), "red")
+    say("ค่าต้องอยู่ระหว่าง %d-%d" % (FPS_CAP_MIN, FPS_CAP_MAX), "red")
     pause()
     return False, None
 
@@ -3145,9 +3145,9 @@ def menu_fps_cap(cfg):
     if not isinstance(fc.get("accounts"), dict):
         fc["accounts"] = {}
     if not cookie_pairs(cfg)[0]:
-        say("No cookies in cookie.txt yet (Menu 5)", "red")
+        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)", "red")
         return pause()
-    say("Fetching Roblox IDs from the cookies...", "dim")
+    say("กำลังดึง Roblox ID จากคุกกี้...", "dim")
     accts = social_accounts(cfg)
     if not accts:
         return pause()
@@ -3156,33 +3156,33 @@ def menu_fps_cap(cfg):
         cfg.save()
         if cfg.d["autoexec"]["auto_create"]:
             report_autoexec(cfg, install_autoexec(cfg), quiet_ok=False)
-        say("The new script takes effect the next time the game is joined (rejoin or reopen). The executor needs setfpscap", "dim")
+        say("สคริปต์ใหม่จะมีผลตอนเข้าเกมครั้งถัดไป (รีจอยหรือเปิดเกมใหม่) ต้องมี setfpscap ในเอ็กซิคิวเตอร์", "dim")
         pause()
 
     while True:
         banner(cfg)
-        t = Table(title="FPS cap per account (matched by Roblox ID)", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "Package", "Account", "Roblox ID", "FPS cap"):
+        t = Table(title="FPS cap ต่อบัญชี (จับคู่ด้วย Roblox ID)", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "แพ็กเกจ", "บัญชี", "Roblox ID", "FPS cap"):
             t.add_column(col)
         for n, (pkg, _, uid, name) in enumerate(accts, 1):
             rec = fc["accounts"].get(str(uid))
             cap = rec.get("cap") if isinstance(rec, dict) else rec
-            t.add_row(str(n), pkg, hide_name(name), hide_id(uid), str(cap) if cap else "not set")
+            t.add_row(str(n), pkg, hide_name(name), hide_id(uid), str(cap) if cap else "ไม่ตั้ง")
         console.print(t)
         n = len(accts)
         a = Table(box=box.SIMPLE, header_style="bold cyan")
-        for col in ("#", "Item", "Value"):
+        for col in ("#", "รายการ", "ค่า"):
             a.add_column(col)
-        a.add_row(str(n + 1), "Set the same cap for every account in the table", "")
-        a.add_row(str(n + 2), "Default for accounts not in the table (0=leave alone)", str(fc["default"] or "leave alone"))
-        a.add_row(str(n + 3), "Clear everything", "")
+        a.add_row(str(n + 1), "ตั้งเท่ากันทุกบัญชีในตาราง", "")
+        a.add_row(str(n + 2), "ค่าเริ่มต้นของบัญชีที่ไม่อยู่ในตาราง (0=ไม่แตะ)", str(fc["default"] or "ไม่แตะ"))
+        a.add_row(str(n + 3), "ล้างค่าทั้งหมด", "")
         console.print(a)
-        c = ask("Pick a number (0=back)")
+        c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c.isdigit() and 1 <= int(c) <= n:
             pkg, _, uid, name = accts[int(c) - 1]
-            ok, cap = read_cap("FPS cap for %s (%d-%d, Enter=clear):" % (hide_name(name), FPS_CAP_MIN, FPS_CAP_MAX))
+            ok, cap = read_cap("FPS cap ของ %s (%d-%d, Enter=ล้าง):" % (hide_name(name), FPS_CAP_MIN, FPS_CAP_MAX))
             if not ok:
                 continue
             if cap:
@@ -3191,7 +3191,7 @@ def menu_fps_cap(cfg):
                 fc["accounts"].pop(str(uid), None)
             apply()
         elif c == str(n + 1):
-            ok, cap = read_cap("FPS cap for every account (%d-%d, Enter=clear):" % (FPS_CAP_MIN, FPS_CAP_MAX))
+            ok, cap = read_cap("FPS cap สำหรับทุกบัญชี (%d-%d, Enter=ล้าง):" % (FPS_CAP_MIN, FPS_CAP_MAX))
             if not ok:
                 continue
             for _, _, uid, name in accts:
@@ -3201,13 +3201,13 @@ def menu_fps_cap(cfg):
                     fc["accounts"].pop(str(uid), None)
             apply()
         elif c == str(n + 2):
-            ok, cap = read_cap("Default (%d-%d, 0 or Enter=leave alone):" % (FPS_CAP_MIN, FPS_CAP_MAX), allow_zero=True)
+            ok, cap = read_cap("ค่าเริ่มต้น (%d-%d, 0 หรือ Enter=ไม่แตะ):" % (FPS_CAP_MIN, FPS_CAP_MAX), allow_zero=True)
             if not ok:
                 continue
             fc["default"] = cap or 0
             apply()
         elif c == str(n + 3):
-            if confirm("Clear all FPS caps?"):
+            if confirm("ล้าง FPS cap ทั้งหมด?"):
                 fc["accounts"].clear()
                 fc["default"] = 0
                 apply()
@@ -3217,42 +3217,42 @@ def menu_heartbeat(cfg):
     h = cfg.d["heartbeat"]
     while True:
         banner(cfg)
-        t = Table(title="Heartbeat (in-game script that signals the tool)", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "Item", "Value"):
+        t = Table(title="Heartbeat (สคริปต์ในเกม ส่งสัญญาณมาที่เครื่องมือ)", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
             t.add_column(col)
-        t.add_row("1", "Enable heartbeat (turn on once the script is installed in every clone)", onoff(h["enabled"]))
-        t.add_row("2", "Port to listen on (127.0.0.1)", str(h["port"]))
-        t.add_row("3", "Script sends every (seconds)", str(h["interval"]))
-        t.add_row("4", "Treat as stopped when silent for more than (seconds)", str(h["timeout"]))
-        t.add_row("5", "Create a .lua script file for each instance (heartbeat/ folder)", "")
-        t.add_row("6", "Delta autoexec folder (use {pkg} = a separate folder per clone)", T(", ".join(cfg.d["autoexec"]["dirs"])))
-        t.add_row("7", "Create/update heartbeat.lua in that folder automatically", onoff(cfg.d["autoexec"]["auto_create"]))
-        t.add_row("8", "Create/update heartbeat.lua now", "")
-        t.add_row("9", "Show the FPS number in the game (draggable, no frame, scales with the screen)", onoff(h["show_fps"]))
-        t.add_row("10", "FPS cap per account (Roblox ID fetched from the cookie) ...", T(fps_cap_summary(cfg)))
+        t.add_row("1", "เปิดใช้ heartbeat (เปิดเมื่อติดตั้งสคริปต์ในทุกโคลนแล้ว)", onoff(h["enabled"]))
+        t.add_row("2", "พอร์ตรับสัญญาณ (127.0.0.1)", str(h["port"]))
+        t.add_row("3", "สคริปต์ส่งทุก (วินาที)", str(h["interval"]))
+        t.add_row("4", "ถือว่าหยุดส่งเมื่อเงียบเกิน (วินาที)", str(h["timeout"]))
+        t.add_row("5", "สร้างไฟล์สคริปต์ .lua ให้แต่ละอินสแตนซ์ (โฟลเดอร์ heartbeat/)", "")
+        t.add_row("6", "โฟลเดอร์ autoexec ของ Delta (ใส่ {pkg} = แยกโฟลเดอร์ต่อโคลน)", T(", ".join(cfg.d["autoexec"]["dirs"])))
+        t.add_row("7", "สร้าง/อัปเดต heartbeat.lua ในโฟลเดอร์นั้นอัตโนมัติ", onoff(cfg.d["autoexec"]["auto_create"]))
+        t.add_row("8", "สร้าง/อัปเดต heartbeat.lua ตอนนี้", "")
+        t.add_row("9", "แสดงตัวเลข FPS บนจอเกม (ลากได้ ไม่มีกรอบ ปรับขนาดตามจอ)", onoff(h["show_fps"]))
+        t.add_row("10", "FPS cap ต่อบัญชี (ดึง Roblox ID จากคุกกี้) ...", T(fps_cap_summary(cfg)))
         console.print(t)
-        c = ask("Pick a number (0=back)")
+        c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c == "1":
             h["enabled"] = not h["enabled"]
         elif c in ("2", "3", "4"):
             key, lo, hi = {"2": ("port", 1024, 65535), "3": ("interval", 5, 120), "4": ("timeout", 30, 600)}[c]
-            v = ask("New value (%d-%d):" % (lo, hi))
+            v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
             if v.isdigit() and lo <= int(v) <= hi:
                 h[key] = int(v)
                 if cfg.d["autoexec"]["auto_create"]:
                     report_autoexec(cfg, install_autoexec(cfg))   # keep the installed script in sync (port/interval)
             elif v:
-                say("Value must be between %d and %d" % (lo, hi), "red")
+                say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
                 pause()
         elif c == "5":
             for p in write_heartbeat_files(cfg):
-                say("Created: " + p, "green")
-            say("Copy each clone's file into that clone's executor autoexec folder (or run it when joining the game)", "dim")
+                say("สร้างแล้ว: " + p, "green")
+            say("คัดลอกไฟล์ของแต่ละโคลนไปไว้ในโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ในโคลนนั้น (หรือรันตอนเข้าเกม)", "dim")
             pause()
         elif c == "6":
-            v = ask("Autoexec folder path (Enter=no change, separate several folders with commas):")
+            v = ask("พาธโฟลเดอร์ autoexec (Enter=ไม่เปลี่ยน, คั่นหลายโฟลเดอร์ด้วยคอมมา):")
             if v:
                 cfg.d["autoexec"]["dirs"] = [x.strip() for x in v.split(",") if x.strip().startswith("/")] or cfg.d["autoexec"]["dirs"]
         elif c == "7":
@@ -3264,7 +3264,7 @@ def menu_heartbeat(cfg):
             h["show_fps"] = not h["show_fps"]
             if cfg.d["autoexec"]["auto_create"]:
                 report_autoexec(cfg, install_autoexec(cfg), quiet_ok=False)
-                say("The new script loads the next time the game is joined (rejoin or reopen)", "dim")
+                say("สคริปต์ใหม่จะโหลดตอนเข้าเกมครั้งถัดไป (รีจอยหรือเปิดเกมใหม่)", "dim")
                 pause()
         elif c == "10":
             menu_fps_cap(cfg)
@@ -3275,22 +3275,22 @@ def menu_perf(cfg):
     r, p = cfg.d["ram"], cfg.d["performance"]
     while True:
         banner(cfg)
-        t = Table(title="Performance: RAM cleanup / lower CPU usage", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "Item", "Value"):
+        t = Table(title="ประสิทธิภาพ: ล้างแรม / ลดการใช้ CPU", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
             t.add_column(col)
-        t.add_row("1", "Automatic RAM cleanup (root only)", onoff(r["enabled"]))
-        t.add_row("2", "Clean RAM every (minutes, 0=not on a schedule)", str(r["interval_min"]))
-        t.add_row("3", "Clean when free RAM drops below (MB, 0=off)", str(r["min_free_mb"]))
-        t.add_row("4", "Also kill cached background apps (am kill-all) ⚠ may kill clones running in the background", onoff(r["kill_cached"]))
-        t.add_row("5", "Safely close unrelated apps (force-stop user-installed apps except Roblox/Termux/Delta and the list in item 6)", onoff(r["kill_others"]))
-        t.add_row("6", "Apps that must not be closed (part of the package name)", ", ".join(r["protect"]))
-        t.add_row("7", "Low-CPU mode (lower process priority, keep game status for 60 seconds, slower screen refresh)", onoff(p["low_cpu"]))
-        t.add_row("8", "Refresh the status panel every (seconds, used with low-CPU mode)", str(p["ui_refresh_sec"]))
-        t.add_row("9", "Clean RAM now", "")
+        t.add_row("1", "ล้างแรมอัตโนมัติ (เฉพาะรูท)", onoff(r["enabled"]))
+        t.add_row("2", "ล้างแรมทุก (นาที, 0=ไม่ล้างตามเวลา)", str(r["interval_min"]))
+        t.add_row("3", "ล้างเมื่อแรมว่างต่ำกว่า (MB, 0=ปิด)", str(r["min_free_mb"]))
+        t.add_row("4", "ปิดแอปพื้นหลังที่ cached ด้วย (am kill-all) ⚠ อาจปิดโคลนที่อยู่เบื้องหลัง", onoff(r["kill_cached"]))
+        t.add_row("5", "ปิดแอปอื่นที่ไม่เกี่ยวข้องแบบปลอดภัย (force-stop แอปที่ติดตั้งเอง เว้น Roblox/Termux/Delta และรายชื่อข้อ 6)", onoff(r["kill_others"]))
+        t.add_row("6", "รายชื่อแอปที่ห้ามปิด (ส่วนของชื่อแพ็กเกจ)", ", ".join(r["protect"]))
+        t.add_row("7", "โหมดประหยัด CPU (ลดความสำคัญโปรเซส, เก็บสถานะเกมไว้ 60 วินาที, รีเฟรชจอช้าลง)", onoff(p["low_cpu"]))
+        t.add_row("8", "รีเฟรชแผงสถานะทุก (วินาที, ใช้เมื่อเปิดโหมดประหยัด CPU)", str(p["ui_refresh_sec"]))
+        t.add_row("9", "ล้างแรมเดี๋ยวนี้", "")
         console.print(t)
         free = mem_available_mb()
-        say("Free RAM now: %s MB%s" % (free if free is not None else "?", "" if ENV.root else "  (non-root mode cannot clean RAM)"), "dim")
-        c = ask("Pick a number (0=back)")
+        say("RAM ว่างตอนนี้: %s MB%s" % (free if free is not None else "?", "" if ENV.root else "  (โหมดไม่รูทล้างแรมไม่ได้)"), "dim")
+        c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c == "1":
@@ -3300,7 +3300,7 @@ def menu_perf(cfg):
         elif c == "5":
             r["kill_others"] = not r["kill_others"]
         elif c == "6":
-            v = ask("Apps that must not be closed, separated by commas (Enter=keep current):")
+            v = ask("รายชื่อที่ห้ามปิด คั่นด้วยคอมมา (Enter=คงเดิม):")
             if v:
                 r["protect"] = [x.strip() for x in v.split(",") if x.strip()]
         elif c == "7":
@@ -3308,30 +3308,30 @@ def menu_perf(cfg):
         elif c in ("2", "3", "8"):
             sec, key, lo, hi = {"2": (r, "interval_min", 0, 1440), "3": (r, "min_free_mb", 0, 8192),
                                 "8": (p, "ui_refresh_sec", 1, 10)}[c]
-            v = ask("New value (%d-%d):" % (lo, hi))
+            v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
             if v.isdigit() and lo <= int(v) <= hi:
                 sec[key] = int(v)
             elif v:
-                say("Value must be between %d and %d" % (lo, hi), "red")
+                say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
                 pause()
         elif c == "9":
             ok, b4, af = drop_ram(r["kill_cached"], cfg)
-            say(("RAM cleaned: free %s → %s MB" % (b4, af)) if ok else ("RAM cleanup failed: " + RAM_LAST["detail"]),
+            say(("ล้างแรมแล้ว: ว่าง %s → %s MB" % (b4, af)) if ok else ("ล้างแรมไม่สำเร็จ: " + RAM_LAST["detail"]),
                 "green" if ok else "red")
             if ok:
-                say("Step results: " + RAM_LAST["detail"], "dim")
+                say("ผลแต่ละขั้น: " + RAM_LAST["detail"], "dim")
                 if b4 is not None and af is not None and af - b4 < 100:
-                    say("Free RAM barely increased: drop_caches only clears caches, not the RAM apps are using", "yellow")
+                    say("แรมว่างแทบไม่เพิ่ม: drop_caches ล้างได้เฉพาะแคช ไม่ใช่แรมที่แอปใช้อยู่", "yellow")
             elif ENV.root and not (r["kill_cached"] or r["kill_others"]):
-                say("Try item 5 (safely close other apps) when drop_caches is locked (usually cloud phones/containers)", "yellow")
+                say("ลองเปิดข้อ 5 (ปิดแอปอื่นแบบปลอดภัย) เมื่อ drop_caches ถูกล็อก (มักเป็นตู้คลาวด์/คอนเทนเนอร์)", "yellow")
             pause()
         cfg.save()
 
 
 def menu_webhook(cfg, hook):
     w = cfg.d["webhook"]
-    names = [("start", "Started"), ("crash", "Dropped/frozen"), ("rejoin", "Rejoined"), ("stop", "Stopped"),
-             ("status", "Periodic status report + screenshot")]
+    names = [("start", "เริ่มทำงาน"), ("crash", "หลุด/ค้าง"), ("rejoin", "รีจอยแล้ว"), ("stop", "หยุดทำงาน"),
+             ("status", "รายงานสถานะ+ภาพหน้าจอเป็นรอบ")]
     n_shot = 3 + len(names)
     n_per = n_shot + 1
     n_cu, n_ce, n_cf, n_ct, n_test = n_per + 1, n_per + 2, n_per + 3, n_per + 4, n_per + 5
@@ -3339,31 +3339,31 @@ def menu_webhook(cfg, hook):
     while True:
         banner(cfg)
         t = Table(title="Discord Webhook", box=box.ROUNDED, header_style="bold cyan")
-        for col in ("#", "Item", "Value"):
+        for col in ("#", "รายการ", "ค่า"):
             t.add_column(col)
-        t.add_row("1", "Webhook URL", T(scrub(w["url"]) or "(not set)"))
-        t.add_row("2", "Enable Webhook", onoff(w["enabled"]))
+        t.add_row("1", "URL Webhook", T(scrub(w["url"]) or "(ยังไม่ตั้ง)"))
+        t.add_row("2", "เปิดใช้งาน Webhook", onoff(w["enabled"]))
         for i, (k, label) in enumerate(names, 3):
-            t.add_row(str(i), "Notify: " + label, onoff(w["events"][k]))
-        t.add_row(str(n_shot), "Attach screenshot (root only, keeps the latest %d)" % MAX_SHOTS, onoff(w["send_screenshot"]))
-        t.add_row(str(n_per), "Send status report + screenshot every N minutes (0=off)", str(w["periodic_min"]))
-        t.add_row(str(n_cu), "Console webhook: URL (empty = use the main URL)", T(scrub(cw["url"]) or "(uses main URL)"))
-        t.add_row(str(n_ce), "Console webhook: send the console log to Discord", onoff(cw["enabled"]))
-        t.add_row(str(n_cf), "Console webhook: batch every (seconds, 3-300)", str(cw["flush_sec"]))
-        t.add_row(str(n_ct), "Test console webhook", "")
-        t.add_row(str(n_test), "Send a test message", "")
+            t.add_row(str(i), "แจ้งเตือน: " + label, onoff(w["events"][k]))
+        t.add_row(str(n_shot), "แนบภาพหน้าจอ (รูทเท่านั้น, เก็บล่าสุด %d รูป)" % MAX_SHOTS, onoff(w["send_screenshot"]))
+        t.add_row(str(n_per), "ส่งรายงานสถานะ+ภาพหน้าจอทุกกี่นาที (0=ปิด)", str(w["periodic_min"]))
+        t.add_row(str(n_cu), "Console webhook: URL (ว่าง = ใช้ URL หลัก)", T(scrub(cw["url"]) or "(ใช้ URL หลัก)"))
+        t.add_row(str(n_ce), "Console webhook: ส่งบันทึกคอนโซลเข้า Discord", onoff(cw["enabled"]))
+        t.add_row(str(n_cf), "Console webhook: รวมส่งทุก (วินาที, 3-300)", str(cw["flush_sec"]))
+        t.add_row(str(n_ct), "ทดสอบ Console webhook", "")
+        t.add_row(str(n_test), "ส่งข้อความทดสอบ", "")
         console.print(t)
-        c = ask("Pick a number (0=back)")
+        c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c == "1":
-            v = ask("Paste the Webhook URL (Enter=delete):")
+            v = ask("วาง URL Webhook (Enter=ลบ):")
             if not v:
                 w["url"], w["enabled"] = "", False
             elif HOOK_RE.match(v):
                 w["url"] = v
             else:
-                say("Invalid URL format", "red")
+                say("รูปแบบ URL ไม่ถูกต้อง", "red")
                 pause()
         elif c == "2":
             w["enabled"] = not w["enabled"]
@@ -3373,49 +3373,49 @@ def menu_webhook(cfg, hook):
         elif c == str(n_shot):
             w["send_screenshot"] = not w["send_screenshot"]
         elif c == str(n_per):
-            v = ask("Every how many minutes (0-1440):")
+            v = ask("ทุกกี่นาที (0-1440):")
             if v.isdigit() and 0 <= int(v) <= 1440:
                 w["periodic_min"] = int(v)
             elif v:
-                say("Must be a number 0-1440", "red")
+                say("ต้องเป็นตัวเลข 0-1440", "red")
                 pause()
         elif c == str(n_cu):
-            v = ask("Paste the Console webhook URL (Enter=use the main URL):")
+            v = ask("วาง URL Console webhook (Enter=ใช้ URL หลัก):")
             if not v:
                 cw["url"] = ""
             elif HOOK_RE.match(v):
                 cw["url"] = v
             else:
-                say("Invalid URL format", "red")
+                say("รูปแบบ URL ไม่ถูกต้อง", "red")
                 pause()
         elif c == str(n_ce):
             cw["enabled"] = not cw["enabled"]
         elif c == str(n_cf):
-            v = ask("New value (3-300):")
+            v = ask("ค่าใหม่ (3-300):")
             if v.isdigit() and 3 <= int(v) <= 300:
                 cw["flush_sec"] = int(v)
             elif v:
-                say("Must be a number 3-300", "red")
+                say("ต้องเป็นตัวเลข 3-300", "red")
                 pause()
         elif c == str(n_ct):
             ch = ConsoleHook(cfg)
             if not ch.url():
-                say("No URL yet (set the main URL or the Console URL first)", "red")
+                say("ยังไม่มี URL (ตั้ง URL หลักหรือ Console URL ก่อน)", "red")
             else:
-                ok = ch._post("GARNT TOOL REJOIN: console webhook test ✅")
-                say("Sent" if ok else "Send failed, check the URL", "green" if ok else "red")
+                ok = ch._post("GARNT TOOL REJOIN: ทดสอบ console webhook ✅")
+                say("ส่งสำเร็จ" if ok else "ส่งไม่สำเร็จ ตรวจสอบ URL", "green" if ok else "red")
             pause()
         elif c == str(n_test):
-            ok = hook.send("test", "✅ Webhook test", "Connected successfully", [("Mode", "ROOT" if ENV.root else "non-root")], sync=True)
-            say("Sent" if ok else "Send failed, check the URL", "green" if ok else "red")
+            ok = hook.send("test", "✅ ทดสอบ Webhook", "เชื่อมต่อสำเร็จ", [("โหมด", "ROOT" if ENV.root else "ไม่รูท")], sync=True)
+            say("ส่งสำเร็จ" if ok else "ส่งไม่สำเร็จ ตรวจสอบ URL", "green" if ok else "red")
             pause()
         cfg.save()
 
 
-MENU = [("1", "Start auto rejoin"), ("2", "Show instances / status"),
-        ("3", "Settings (game link, check interval, launch delay)"), ("4", "Scan packages"),
-        ("5", "Cookies (login / pull from Roblox apps)"), ("6", "Auto settings"), ("7", "Discord Webhook"), ("8", "Block / unblock / add friends (using cookies)"),
-        ("9", "Open all Roblox (adjustable delay)"), ("0", "Exit")]
+MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
+        ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
+        ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
+        ("9", "เปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("0", "ออก")]
 
 
 def main():
@@ -3425,15 +3425,15 @@ def main():
     setup_logging()
     hook = Hook(cfg)
     apply_perf(cfg)
-    log.info("Program started mode=%s folder=%s", "root" if ENV.root else "non-root", BASE)
+    log.info("เริ่มโปรแกรม โหมด=%s โฟลเดอร์=%s", "root" if ENV.root else "non-root", BASE)
     if not STORAGE_OK:
-        say("Cannot write to /sdcard/Download (storage permission not granted?), using the fallback folder: " + BASE, "yellow")
-    say("Scanning packages...", "dim")
+        say("เขียน /sdcard/Download ไม่ได้ (ยังไม่อนุญาตที่เก็บข้อมูล?) ใช้โฟลเดอร์สำรอง: " + BASE, "yellow")
+    say("กำลังสแกนแพ็กเกจ...", "dim")
     refresh_packages(cfg)
     if cfg.d["autoexec"]["auto_create"]:
         report_autoexec(cfg, install_autoexec(cfg))
     if cfg.d["auto"]["start_on_launch"] and parse_link(cfg.d["game_link"]) and cfg.d["detected"]:
-        say("Starting automatically in 5 seconds (Ctrl+C to cancel)", "yellow")
+        say("เริ่มอัตโนมัติใน 5 วินาที (Ctrl+C เพื่อยกเลิก)", "yellow")
         try:
             time.sleep(5)
             menu_start(cfg, hook)
@@ -3444,7 +3444,7 @@ def main():
         for k, label in MENU:
             console.print(Text.assemble(("  [%s] " % k, "bold cyan"), (label, "bold" if k != "0" else "red")))
         console.print()
-        c = ask("Pick a menu:")
+        c = ask("เลือกเมนู:")
         if c == "1":
             menu_start(cfg, hook)
         elif c == "2":
@@ -3464,7 +3464,7 @@ def main():
         elif c == "9":
             menu_open_all(cfg)
         elif c == "0":
-            say("Goodbye!", "cyan")
+            say("ลาก่อน!", "cyan")
             return
 
 
@@ -3472,4 +3472,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        say("\nExiting the program", "cyan")
+        say("\nออกจากโปรแกรม", "cyan")
