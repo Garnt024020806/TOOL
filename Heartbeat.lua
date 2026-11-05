@@ -26,23 +26,41 @@ while not lp do task.wait(1); lp = Players.LocalPlayer end
 
 -- FPS cap: ดู UserId ของบัญชีที่กำลังเล่นอยู่ แล้วตั้งเพดานตามที่ตั้งไว้ (ต้องมี setfpscap ในเอ็กซิคิวเตอร์)
 -- capInfo ถูกส่งไปกับ heartbeat (cap=) และแสดงในคอนโซล: off=ไม่ได้ตั้งให้ ID นี้ nofn=ไม่มีฟังก์ชัน err=เรียกแล้ว error
---   ignNN=เรียกแล้วแต่อ่านกลับได้ NN flagNN=ใช้ FFlag สำรอง setNN=ตั้งแล้ว
+--   noeffNN=เรียกแล้วแต่ FPS จริงยังเป็น NN (ไม่ติด) setNN=ตั้งแล้ว
 local capInfo = "off"
 
+local CAP_NAMES = { "setfpscap", "set_fps_cap", "setfpslimit", "set_fps_limit", "setrobloxfps", "setfps" }
+local fps = 0                                          -- FPS จริงที่วัดเอง (อัปเดตจาก Heartbeat ด้านล่าง) ไม่เชื่อ getfpscap เพราะบางตัวรันอ่านค่าเพี้ยน
+local capSetAt, capVal = 0, 0
+
+-- รวบ env ที่เอ็กซิคิวเตอร์ต่างค่ายชอบซ่อนฟังก์ชันไว้: getgenv, _G, getfenv, และตาราง syn/fluxus/krnl
+local function scanEnvs()
+    local envs = {}
+    local function add(t) if type(t) == "table" then table.insert(envs, t) end end
+    if getgenv then pcall(function() add(getgenv()) end) end
+    add(_G)
+    if getfenv then pcall(function() add(getfenv(0)) end); pcall(function() add(getfenv(1)) end) end
+    local base = #envs
+    for i = 1, base do
+        for _, n in ipairs({ "syn", "fluxus", "krnl", "Krnl", "http" }) do
+            local ok, t = pcall(function() return envs[i][n] end)
+            if ok then add(t) end
+        end
+    end
+    return envs
+end
+
 local function findCapFn()
-    if setfpscap then return setfpscap end
-    if set_fps_cap then return set_fps_cap end
-    if setfpslimit then return setfpslimit end
-    local envs = { _G }
-    if getgenv then table.insert(envs, 1, getgenv()) end
-    for _, env in ipairs(envs) do
-        for _, n in ipairs({ "setfpscap", "set_fps_cap", "setfpslimit" }) do
+    for _, n in ipairs(CAP_NAMES) do
+        local ok, f = pcall(function() return (getfenv and getfenv()[n]) or _G[n] end)
+        if ok and type(f) == "function" then return f end
+    end
+    for _, env in ipairs(scanEnvs()) do
+        for _, n in ipairs(CAP_NAMES) do
             local ok, f = pcall(function() return env[n] end)
             if ok and type(f) == "function" then return f end
         end
     end
-    local ok, f = pcall(function() return syn and syn.set_fps_cap end)
-    if ok and type(f) == "function" then return f end
     return nil
 end
 
@@ -50,28 +68,21 @@ local function applyCap()
     local cap = CAPS[lp.UserId] or DEFAULT_CAP
     if type(cap) ~= "number" or cap <= 0 then capInfo = "off"; return end
     local fn = findCapFn()
-    if fn then
-        if not pcall(fn, cap) then capInfo = "err"; return end
-        local back
-        if getfpscap then
-            local ok, v = pcall(getfpscap)
-            if ok and type(v) == "number" then back = math.floor(v + 0.5) end
-        end
-        capInfo = (back and back ~= cap) and ("ign" .. tostring(back)) or ("set" .. tostring(cap))
-        return
+    if not fn then capInfo = "nofn"; return end
+    if not pcall(fn, cap) then capInfo = "err"; return end
+    if capVal ~= cap then capVal, capSetAt = cap, os.clock() end
+    -- ตรวจจาก FPS จริง หลังตั้งไปแล้ว 5 วินาทีขึ้นไป: ถ้ายังสูงกว่าเพดานมาก = ตัวรันรับคำสั่งแต่ไม่ทำจริง
+    -- (ถ้าเครื่องช้ากว่า cap อยู่แล้ว แยกไม่ออกว่า cap ติดหรือไม่ จะขึ้น set ตามปกติ)
+    if fps > 0 and os.clock() - capSetAt >= 5 and fps > cap * 1.5 + 2 then
+        capInfo = "noeff" .. tostring(fps)
+    else
+        capInfo = "set" .. tostring(cap)
     end
-    -- ฟังก์ชันสำรอง: setfflag (ไม่ยืนยันว่าได้ผลในทุกเอ็กซิคิวเตอร์)
-    if setfflag then
-        local ok = pcall(setfflag, "DFIntTaskSchedulerTargetFps", tostring(cap))
-        capInfo = ok and ("flag" .. tostring(cap)) or "nofn"
-        return
-    end
-    capInfo = "nofn"
 end
 pcall(applyCap)
 
 local lastFrame = os.clock()
-local frames, fps, winStart = 0, 0, os.clock()
+local frames, winStart = 0, os.clock()
 RunService.Heartbeat:Connect(function()
     local now = os.clock()
     lastFrame = now
