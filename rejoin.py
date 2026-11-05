@@ -200,10 +200,6 @@ DEFAULTS = {
     "performance": {"low_cpu": True, "ui_refresh_sec": 2},
     "ui": {"streamer_mode": True},   # hide account names on screen (first 4 chars + #)
     "console_webhook": {"enabled": False, "url": "", "flush_sec": 10},   # blank url = reuse the main webhook
-    "dialog_detect": {"enabled": True, "every_sec": 30, "confirm": 2},
-    "screen_guard": {"enabled": True, "check_sec": 60, "fix_stacked": True, "kill_stray": False,
-                     "keep": ["com.termux", "com.android.systemui", "com.topjohnwu.magisk"]},
-    "arrange": {"enabled": True, "cols": 0, "gap": 6, "settle_sec": 12},   # tile the game windows (root, freeform windows)
     "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False,
             "kill_others": False, "protect": ["termux", "magisk", "delta"]},
     "webhook": {
@@ -439,9 +435,12 @@ def AM():
 RAM_LAST = {"detail": ""}
 
 
+KEEP_PKGS = ["com.termux", "com.android.systemui", "com.topjohnwu.magisk"]
+
+
 def kill_others(cfg):
     """Root only: force-stop RUNNING user-installed apps that are not protected. -> list of stopped packages.
-    Protected: Roblox clones, anything matching ram.protect (substring), screen_guard.keep, the launcher."""
+    Protected: Roblox clones, anything matching ram.protect (substring), the launcher."""
     r = cfg.d["ram"]
     _, o3 = sh("pm list packages -3", root=True, timeout=30)
     third = {l.split(":", 1)[1].strip() for l in o3.splitlines() if l.startswith("package:")}
@@ -452,7 +451,7 @@ def kill_others(cfg):
     # termux/root managers are ALWAYS protected, whatever the user types in the protect list
     prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [x.lower() for x in prefixes(cfg)] + [
                                                                       "termux", "magisk", "kernelsu", "supersu"])
-    keep = set(cfg.d["detected"]) | set(cfg.d["screen_guard"]["keep"]) | {home_pkg()}
+    keep = set(cfg.d["detected"]) | set(KEEP_PKGS) | {home_pkg()}
     victims = [p for p in sorted(third & running) if p not in keep and not any(x in p.lower() for x in prot)]
     for p in victims:
         sh(AM() + " force-stop " + shlex.quote(p), root=True, timeout=20)
@@ -488,135 +487,6 @@ def drop_ram(kill_cached=False, cfg=None):
     return any(ok for _, ok, _ in steps), before, mem_available_mb()
 
 
-def sh_bytes(cmd, root=False, timeout=25):
-    if root and os.geteuid() != 0:
-        if not ENV.su:
-            return b""
-        argv = [ENV.su, "-c", cmd]
-    else:
-        argv = ["sh", "-c", cmd]
-    try:
-        return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL).stdout or b""
-    except Exception:
-        return b""
-
-
-def parse_raw_frame(data):
-    """Raw `screencap` output: header (w, h, format[, colorspace]) + RGBA pixels. -> (w, h, fmt, offset) or None"""
-    if len(data) < 16:
-        return None
-    w, h, fmt = struct.unpack_from("<III", data, 0)
-    if not (0 < w < 10000 and 0 < h < 10000):
-        return None
-    for off in (12, 16):
-        if len(data) - off == w * h * 4:
-            return w, h, fmt, off
-    return None
-
-
-def find_disconnect_dialog(data, w, h, off, step=None):
-    """Detect Roblox's error prompt ("Disconnected ... Error Code: 277"): a big uniform dark-gray panel
-    (~#393B3D) that contains a wide white button. Works on a sub-sampled pixel grid (cheap, no extra libs)."""
-    step = step or max(2, min(w, h) // 150)
-    gw, gh = w // step, h // step
-    stride = w * 4
-    G, Wt = bytearray(gw * gh), bytearray(gw * gh)
-    for gy in range(gh):
-        row = off + gy * step * stride
-        base = gy * gw
-        for gx in range(gw):
-            i = row + gx * step * 4
-            r, g, b = data[i], data[i + 1], data[i + 2]
-            if r > 231 and g > 231 and b > 231:
-                Wt[base + gx] = 1
-            elif 44 <= r <= 72 and 44 <= g <= 74 and 46 <= b <= 76 and max(r, g, b) - min(r, g, b) <= 10:
-                G[base + gx] = 1
-    seen, best = bytearray(gw * gh), None
-    for start in range(gw * gh):
-        if not G[start] or seen[start]:
-            continue
-        stack, n = [start], 0
-        seen[start] = 1
-        x0 = y0 = 1 << 30
-        x1 = y1 = -1
-        while stack:
-            p = stack.pop()
-            n += 1
-            y, x = divmod(p, gw)
-            x0, x1, y0, y1 = min(x0, x), max(x1, x), min(y0, y), max(y1, y)
-            for q, ok in ((p - 1, x > 0), (p + 1, x < gw - 1), (p - gw, y > 0), (p + gw, y < gh - 1)):
-                if ok and G[q] and not seen[q]:
-                    seen[q] = 1
-                    stack.append(q)
-        if best is None or n > best[0]:
-            best = (n, x0, y0, x1, y1)
-    if not best:
-        return False
-    n, x0, y0, x1, y1 = best
-    bw, bh = x1 - x0 + 1, y1 - y0 + 1
-    if bw < gw * 0.08 or bh < gh * 0.05 or bw > gw * 0.95 or bh > gh * 0.8:
-        return False
-    if n < 0.55 * bw * bh or not 0.9 <= bw / bh <= 4.0:
-        return False
-    run_best = white = 0
-    for y in range(y0 + int(bh * 0.45), y1 + 1):
-        run = 0
-        for x in range(x0, x1 + 1):
-            if Wt[y * gw + x]:
-                run += 1
-                white += 1
-                run_best = max(run_best, run)
-            else:
-                run = 0
-    return run_best >= max(4, int(bw * 0.12)) and white >= 15
-
-
-def detect_screen_dialog():
-    """Root only. -> (found: True/False/None, info). None = frame could not be read."""
-    data = sh_bytes("screencap", root=True)
-    fr = parse_raw_frame(data)
-    if not fr or fr[2] not in (1, 2, 5):
-        return None, "อ่านภาพหน้าจอไม่ได้"
-    w, h, fmt, off = fr
-    return find_disconnect_dialog(data, w, h, off), "%dx%d format=%d" % (w, h, fmt)
-
-
-def parse_focus(text):
-    top = ""
-    for line in text.splitlines():
-        m = re.search(r"\bu\d+\s+([\w.]+)/", line)
-        if not m:
-            continue
-        if "mCurrentFocus" in line:
-            return m.group(1)
-        top = top or m.group(1)
-    return top
-
-
-GUARD_CMD = ("echo '@@FOCUS@@'; dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp'; "
-             "echo '@@DLG@@'; dumpsys window windows 2>/dev/null | grep -E 'Application Error|Application Not Responding|AppErrorDialog|AppNotRespondingDialog'; "
-             r"echo '@@TASK@@'; dumpsys activity activities 2>/dev/null | grep -E '\* (Task|TaskRecord)\{'")
-
-
-def parse_guard(out, prefix):
-    parts = re.split(r"@@(FOCUS|DLG|TASK)@@", out)
-    sec = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
-    dialogs = set()
-    for l in sec.get("DLG", "").splitlines():
-        if not l.strip():
-            continue
-        m = re.search(r"(?:Application Error|Application Not Responding|Not Responding)[: ]+([\w.]+)", l)
-        dialogs.add(m.group(1) if m else "?")
-    tasks = {}
-    for l in sec.get("TASK", "").splitlines():
-        m = re.search(r"\bA=(?:\d+:)?([\w.]+)", l)
-        if m:
-            tid = re.search(r"#(\d+)", l)
-            tasks.setdefault(m.group(1), set()).add(tid.group(1) if tid else l.strip())
-    return {"top": parse_focus(sec.get("FOCUS", "")), "dialogs": dialogs,
-            "stacked": sorted(p for p, ids in tasks.items() if len(ids) > 1 and p.startswith(prefix))}
-
-
 def home_pkg():
     def run():
         _, o = sh("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME",
@@ -627,110 +497,6 @@ def home_pkg():
                 return m.group(1)
         return ""
     return cached("home", 3600, run)
-
-
-def grid_rects(n, w, h, cols=0, gap=6):
-    """n equal tiles (left, top, right, bottom) in row-major order. cols=0 -> pick the grid closest to the screen shape."""
-    if n <= 0 or w <= 0 or h <= 0:
-        return []
-    if cols <= 0:
-        cols = max(1, min(n, int(round((n * w / float(h)) ** 0.5))))
-    cols = min(cols, n)
-    rows = -(-n // cols)
-    cw, ch = (w - gap * (cols + 1)) // cols, (h - gap * (rows + 1)) // rows
-    out = []
-    for i in range(n):
-        r, c = divmod(i, cols)
-        l, t = gap + c * (cw + gap), gap + r * (ch + gap)
-        out.append((l, t, l + cw, t + ch))
-    return out
-
-
-def display_size():
-    """Current display size (rotation included). Root. -> (w, h) or (0, 0)"""
-    _, o = sh("dumpsys window displays 2>/dev/null | grep -m1 -E 'cur=[0-9]+x[0-9]+'", root=True, timeout=15)
-    m = re.search(r"cur=(\d+)x(\d+)", o)
-    if m:
-        return int(m.group(1)), int(m.group(2))
-    _, o = sh("wm size", root=True, timeout=10)
-    m = re.findall(r"(\d+)x(\d+)", o)
-    return (int(m[-1][0]), int(m[-1][1])) if m else (0, 0)
-
-
-def parse_task_ids(out):
-    """dumpsys task lines -> {package: [task ids, top-most first]}"""
-    tasks = {}
-    for l in out.splitlines():
-        m, t = re.search(r"\bA=(?:\d+:)?([\w.]+)", l), re.search(r"#(\d+)", l)
-        if m and t:
-            ids = tasks.setdefault(m.group(1), [])
-            if t.group(1) not in ids:
-                ids.append(t.group(1))
-    return tasks
-
-
-def arrange_windows(cfg, pkgs):
-    """Tile the game windows of `pkgs` (in order) across the screen with `am task resize`. -> (ok, message)"""
-    if not ENV.root:
-        return False, "ต้องใช้สิทธิ์รูท"
-    a = cfg.d["arrange"]
-    w, h = display_size()
-    if not (w and h):
-        return False, "อ่านขนาดหน้าจอไม่ได้"
-    _, o = sh(r"dumpsys activity activities 2>/dev/null | grep -E '\* (Task|TaskRecord)\{'", root=True, timeout=40)
-    tasks = parse_task_ids(o)
-    present = [p for p in pkgs if tasks.get(p)]
-    if not present:
-        return False, "ไม่พบหน้าต่างของอินสแตนซ์ (เกมยังไม่เปิด?)"
-    rects = grid_rects(len(present), w, h, int(a["cols"]), int(a["gap"]))
-    am, done, bad = AM(), 0, []
-    for p, (l, t, r, b) in zip(present, rects):
-        tid = tasks[p][0]
-        sh("%s task resizeable %s 3 2>/dev/null" % (am, tid), root=True, timeout=15)
-        rc, out = sh("%s task resize %s %d %d %d %d 2>&1" % (am, tid, l, t, r, b), root=True, timeout=15)
-        if rc == 0 and not re.search(r"exception|error|unknown|not found|invalid", out, re.I):
-            done += 1
-        else:
-            bad.append(p)
-    cols = max(1, min(len(present), int(a["cols"]) or int(round((len(present) * w / float(h)) ** 0.5))))
-    msg = "%d ตัว (%d คอลัมน์) ขนาดจอ %dx%d" % (done, cols, w, h)
-    if bad:
-        msg += " | ไม่สำเร็จ: " + ", ".join(bad)
-    return done > 0, msg
-
-
-def screen_scan(cfg):
-    _, out = sh(GUARD_CMD, root=True, timeout=40)
-    return parse_guard(out, prefixes(cfg))
-
-
-def stray_pkg(cfg, info):
-    g, top = cfg.d["screen_guard"], info["top"]
-    if not (g["kill_stray"] and top):
-        return ""
-    if top.startswith(prefixes(cfg)) or top in g["keep"] or top == home_pkg():
-        return ""
-    return top
-
-
-def screen_clear(cfg, info, force_all=False):
-    """Close system dialogs and force-stop apps causing stacked/overlapping windows. -> list of actions (Thai)."""
-    g, prefix, q = cfg.d["screen_guard"], prefixes(cfg), shlex.quote
-    sh(AM() + " broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS", root=True, timeout=20)
-    acts = ["ปิดหน้าต่างระบบ"]
-    for p in sorted(info["dialogs"]):
-        if p != "?" and (p.startswith(prefix) or (g["kill_stray"] and p not in g["keep"])):
-            sh(AM() + " force-stop " + q(p), root=True, timeout=20)
-            acts.append("force-stop %s (หน้าต่างแจ้งข้อผิดพลาด)" % p)
-    if g["fix_stacked"] or force_all:
-        for p in info["stacked"]:
-            sh(AM() + " force-stop " + q(p), root=True, timeout=20)
-            acts.append("force-stop %s (หน้าต่างซ้อน)" % p)
-    sp = stray_pkg(cfg, info)
-    if sp:
-        sh(AM() + " force-stop " + q(sp), root=True, timeout=20)
-        acts.append("force-stop %s (ขึ้นทับหน้าจอ)" % sp)
-    return acts
 
 
 _NICED = False
@@ -1789,7 +1555,7 @@ def sys_load():
         return None
 
 
-CONSOLE_HELP = ("คำสั่ง: rejoin <เลข|all> | pause <เลข|all> | resume <เลข|all> | status | ram | shot | clear | arrange | streamer | help | quit")
+CONSOLE_HELP = ("คำสั่ง: rejoin <เลข|all> | pause <เลข|all> | resume <เลข|all> | status | ram | shot | streamer | help | quit")
 
 
 # ----------------------------------------------------------------- engine
@@ -1802,7 +1568,6 @@ class Inst:
         self.user = ""
         self.cookie_bad = False
         self.pres_at, self.pres_val = 0.0, None
-        self.dlg_hits, self.dlg_serial = 0, 0
         self.wake, self.cmd, self.paused = threading.Event(), "", False
         self.state, self.detail = "queued", ""
         self.fails = self.rejoins = 0
@@ -1837,10 +1602,7 @@ class Engine:
         self.stop = threading.Event()
         self.gate = threading.Lock()
         self.last_launch = 0.0
-        self._arr_timer, self._arr_lock = None, threading.Lock()
         self.events = deque(maxlen=10)
-        self._dlg_n = 0
-        self._stack_seen, self._stack_last = {}, {}
         self.threads = []
         self.t0 = time.time()
 
@@ -1861,7 +1623,7 @@ class Engine:
         self.hook.send("start", "▶️ เริ่มรีจอยอัตโนมัติ", "เริ่มจัดการ %d อินสแตนซ์" % len(self.insts),
                        [("โหมด", "ROOT" if ENV.root else "ไม่รูท"), ("ตรวจทุก", "%ds" % self.interval()),
                         ("แพ็กเกจ", ", ".join(i.pkg for i in self.insts))])
-        SNAP["fg"] = bool(ENV.root and (self.cfg.d["auto"]["foreground_check"] or self.cfg.d["dialog_detect"]["enabled"]))
+        SNAP["fg"] = bool(ENV.root and (self.cfg.d["auto"]["foreground_check"]))
         for target, args in [(self._worker, (i,)) for i in self.insts] + [(self._housekeeper, ())]:
             t = threading.Thread(target=target, args=args, daemon=True)
             t.start()
@@ -1888,7 +1650,7 @@ class Engine:
     # -- housekeeping: RAM clearing + periodic status report with screenshot
     def _housekeeper(self):
         c = self.cfg.d
-        last_ram = last_rep = last_guard = time.time()
+        last_ram = last_rep = time.time()
         while not self.stop.wait(self.HK_TICK):
             now = time.time()
             r = c["ram"]
@@ -1899,13 +1661,6 @@ class Engine:
                 if due or low:
                     self.clear_ram("แรมว่างต่ำ" if low else "ตามเวลา")
                     last_ram = time.time()
-            g = c["screen_guard"]
-            if g["enabled"] and ENV.root and now - last_guard >= int(g["check_sec"]):
-                last_guard = now
-                try:
-                    self.guard_tick()
-                except Exception as e:
-                    self.event("ล้างหน้าจอซ้อนผิดพลาด: %s" % e, "red")
             pm = int(c["webhook"]["periodic_min"])
             if pm > 0 and now - last_rep >= pm * self.MIN:
                 last_rep = now
@@ -1913,49 +1668,6 @@ class Engine:
                     self.report(pm)
                 except Exception as e:
                     self.event("ส่งรายงานสถานะไม่สำเร็จ: %s" % e, "red")
-
-    def _arrange_later(self):
-        """After a launch/rejoin: tile the windows once the new one has appeared (debounced; every launch restarts the wait)."""
-        a = self.cfg.d["arrange"]
-        if not (a["enabled"] and ENV.root):
-            return
-        with self._arr_lock:
-            if self._arr_timer:
-                self._arr_timer.cancel()
-            self._arr_timer = threading.Timer(max(3, int(a["settle_sec"])), self._arrange_fire)
-            self._arr_timer.daemon = True
-            self._arr_timer.start()
-
-    def _arrange_fire(self):
-        if self.stop.is_set():
-            return
-        try:
-            self.arrange_now("อัตโนมัติ")
-        except Exception as e:
-            self.event("เรียงหน้าต่างผิดพลาด: %s" % e, "red")
-
-    def arrange_now(self, why):
-        ok, msg = arrange_windows(self.cfg, [i.pkg for i in self.insts])
-        self.event("เรียงหน้าต่าง (%s): " % why + msg, "cyan" if ok else "yellow")
-
-    def guard_tick(self):
-        """Clear stacked/overlapping windows: error dialogs, duplicate tasks (debounced), stray apps on top."""
-        info = screen_scan(self.cfg)
-        now = time.time()
-        own = {i.pkg for i in self.insts}
-        stacked_now = [p for p in info["stacked"] if p in own]
-        for p in list(self._stack_seen):
-            if p not in stacked_now:
-                del self._stack_seen[p]
-        confirmed = []
-        for p in stacked_now:
-            self._stack_seen[p] = self._stack_seen.get(p, 0) + 1
-            if self._stack_seen[p] >= 2 and now - self._stack_last.get(p, 0) >= 10 * self.MIN:
-                confirmed.append(p)
-                self._stack_last[p] = now
-        info["stacked"] = confirmed
-        if info["dialogs"] or confirmed or stray_pkg(self.cfg, info):
-            self.event("ล้างหน้าจอซ้อน: " + ", ".join(screen_clear(self.cfg, info)), "yellow")
 
     def clear_ram(self, why):
         ok, before, after = drop_ram(self.cfg.d["ram"]["kill_cached"], self.cfg)
@@ -2034,7 +1746,7 @@ class Engine:
             STREAMER["on"] = self.cfg.d["ui"]["streamer_mode"] = on
             self.cfg.save()
             self.event("โหมดซ่อนชื่อบัญชี (streamer): " + ("เปิด" if on else "ปิด"), "cyan")
-        elif cmd in ("ram", "shot", "clear", "arrange"):
+        elif cmd in ("ram", "shot"):
             if not ENV.root:
                 self.event("คำสั่ง %s ต้องใช้รูท" % cmd, "red")
             else:
@@ -2047,10 +1759,6 @@ class Engine:
         try:
             if cmd == "ram":
                 self.clear_ram("คำสั่ง")
-            elif cmd == "arrange":
-                self.arrange_now("คำสั่ง")
-            elif cmd == "clear":
-                self.event("ล้างหน้าจอ: " + ", ".join(screen_clear(self.cfg, screen_scan(self.cfg), force_all=True)), "yellow")
             else:
                 path = take_shot("console")
                 self.event("บันทึกภาพหน้าจอ: %s" % os.path.basename(path) if path else "แคปหน้าจอไม่สำเร็จ", "cyan" if path else "red")
@@ -2093,9 +1801,7 @@ class Engine:
             ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"] or force)
             self.last_launch = time.time()
         inst.launched_at = time.time()
-        self._arrange_later()
         inst.pres_at = 0.0
-        inst.dlg_hits = 0
         inst.state, inst.detail = "joining", "รอเข้าเกม"
         if not ok:
             self.event("%s: เปิดเกมไม่สำเร็จ: %s" % (inst.label, msg), "red")
@@ -2127,18 +1833,6 @@ class Engine:
             return inst.pres_val
         inst.pres_val, inst.pres_at = in_game(inst.session, inst.uid), time.time()
         return inst.pres_val
-
-    def dialog_state(self):
-        """One screenshot analysis shared by all instances (cached). -> dict or None"""
-        d = self.cfg.d["dialog_detect"]
-        if not (ENV.root and d["enabled"]):
-            return None
-
-        def run():
-            found, _ = detect_screen_dialog()
-            self._dlg_n += 1
-            return {"found": bool(found), "top": parse_focus(foreground_text()), "n": self._dlg_n}
-        return cached("dlg", max(5, int(d["every_sec"]) - 1), run)
 
     def hb_state(self, inst):
         """None = no usable heartbeat info (never seen / disabled); else ("ok"|"stale", detail)."""
@@ -2172,18 +1866,6 @@ class Engine:
             if hs[0] == "err":
                 return "disconnected", hs[1]
             return ("ok", hs[1]) if hs[0] == "ok" else ("noheartbeat", hs[1])
-        ds = self.dialog_state()
-        if ds is not None:
-            hit = ds["found"] and (len(self.insts) == 1 or ds["top"] == inst.pkg)
-            if hit and ds["n"] != inst.dlg_serial:
-                inst.dlg_hits += 1
-            elif not hit:
-                inst.dlg_hits = 0
-            inst.dlg_serial = ds["n"]
-            if hit and inst.dlg_hits >= int(self.cfg.d["dialog_detect"]["confirm"]):
-                return "disconnected", REASON["disconnected"]
-            if hit:
-                return "ok", "พบหน้าต่างผิดปกติ รอยืนยันอีก %d รอบ" % (int(self.cfg.d["dialog_detect"]["confirm"]) - inst.dlg_hits)
         pres = self.presence(inst)
         who = (" [%s]" % inst.user) if inst.user else ""
         if pres is True:
@@ -3412,10 +3094,32 @@ def menu_webhook(cfg, hook):
         cfg.save()
 
 
+def menu_list(cfg):
+    """Menu 10: static list of detected instances (no live refresh, no network)."""
+    det = cfg.d["detected"]
+    if not det:
+        say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
+        return pause()
+    pairs, n_ck = cookie_pairs(cfg)
+    cmap = dict(pairs)
+    sel = selected_packages(cfg)
+    banner(cfg)
+    t = Table(title="รายการอินสแตนซ์ (%d)" % len(det), box=box.ROUNDED, header_style="bold cyan")
+    for col in ("#", "แพ็กเกจ", "เลือกรัน", "คุกกี้"):
+        t.add_column(col)
+    for i, pkg in enumerate(det, 1):
+        t.add_row(str(i), pkg, onoff(pkg in sel), Text("มี", style="green") if pkg in cmap else Text("-", style="dim"))
+    console.print(t)
+    link = cfg.d["game_link"]
+    say("เลือกรัน %d/%d | คุกกี้ในไฟล์ %d บรรทัด | ลิงก์เกม: %s" % (
+        len(sel), len(det), n_ck, (link[:60] + "…" if len(link) > 60 else link) or "(ยังไม่ตั้ง)"), "dim")
+    pause()
+
+
 MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
         ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
-        ("9", "เปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("0", "ออก")]
+        ("9", "เปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("0", "ออก")]
 
 
 def main():
@@ -3463,6 +3167,8 @@ def main():
             menu_social(cfg)
         elif c == "9":
             menu_open_all(cfg)
+        elif c == "10":
+            menu_list(cfg)
         elif c == "0":
             say("ลาก่อน!", "cyan")
             return
