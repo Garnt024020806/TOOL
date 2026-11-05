@@ -953,23 +953,41 @@ while not lp do task.wait(1); lp = Players.LocalPlayer end
 
 -- FPS cap: ดู UserId ของบัญชีที่กำลังเล่นอยู่ แล้วตั้งเพดานตามที่ตั้งไว้ (ต้องมี setfpscap ในเอ็กซิคิวเตอร์)
 -- capInfo ถูกส่งไปกับ heartbeat (cap=) และแสดงในคอนโซล: off=ไม่ได้ตั้งให้ ID นี้ nofn=ไม่มีฟังก์ชัน err=เรียกแล้ว error
---   ignNN=เรียกแล้วแต่อ่านกลับได้ NN flagNN=ใช้ FFlag สำรอง setNN=ตั้งแล้ว
+--   noeffNN=เรียกแล้วแต่ FPS จริงยังเป็น NN (ไม่ติด) setNN=ตั้งแล้ว
 local capInfo = "off"
 
+local CAP_NAMES = { "setfpscap", "set_fps_cap", "setfpslimit", "set_fps_limit", "setrobloxfps", "setfps" }
+local fps = 0                                          -- FPS จริงที่วัดเอง (อัปเดตจาก Heartbeat ด้านล่าง) ไม่เชื่อ getfpscap เพราะบางตัวรันอ่านค่าเพี้ยน
+local capSetAt, capVal = 0, 0
+
+-- รวบ env ที่เอ็กซิคิวเตอร์ต่างค่ายชอบซ่อนฟังก์ชันไว้: getgenv, _G, getfenv, และตาราง syn/fluxus/krnl
+local function scanEnvs()
+    local envs = {}
+    local function add(t) if type(t) == "table" then table.insert(envs, t) end end
+    if getgenv then pcall(function() add(getgenv()) end) end
+    add(_G)
+    if getfenv then pcall(function() add(getfenv(0)) end); pcall(function() add(getfenv(1)) end) end
+    local base = #envs
+    for i = 1, base do
+        for _, n in ipairs({ "syn", "fluxus", "krnl", "Krnl", "http" }) do
+            local ok, t = pcall(function() return envs[i][n] end)
+            if ok then add(t) end
+        end
+    end
+    return envs
+end
+
 local function findCapFn()
-    if setfpscap then return setfpscap end
-    if set_fps_cap then return set_fps_cap end
-    if setfpslimit then return setfpslimit end
-    local envs = { _G }
-    if getgenv then table.insert(envs, 1, getgenv()) end
-    for _, env in ipairs(envs) do
-        for _, n in ipairs({ "setfpscap", "set_fps_cap", "setfpslimit" }) do
+    for _, n in ipairs(CAP_NAMES) do
+        local ok, f = pcall(function() return (getfenv and getfenv()[n]) or _G[n] end)
+        if ok and type(f) == "function" then return f end
+    end
+    for _, env in ipairs(scanEnvs()) do
+        for _, n in ipairs(CAP_NAMES) do
             local ok, f = pcall(function() return env[n] end)
             if ok and type(f) == "function" then return f end
         end
     end
-    local ok, f = pcall(function() return syn and syn.set_fps_cap end)
-    if ok and type(f) == "function" then return f end
     return nil
 end
 
@@ -977,28 +995,21 @@ local function applyCap()
     local cap = CAPS[lp.UserId] or DEFAULT_CAP
     if type(cap) ~= "number" or cap <= 0 then capInfo = "off"; return end
     local fn = findCapFn()
-    if fn then
-        if not pcall(fn, cap) then capInfo = "err"; return end
-        local back
-        if getfpscap then
-            local ok, v = pcall(getfpscap)
-            if ok and type(v) == "number" then back = math.floor(v + 0.5) end
-        end
-        capInfo = (back and back ~= cap) and ("ign" .. tostring(back)) or ("set" .. tostring(cap))
-        return
+    if not fn then capInfo = "nofn"; return end
+    if not pcall(fn, cap) then capInfo = "err"; return end
+    if capVal ~= cap then capVal, capSetAt = cap, os.clock() end
+    -- ตรวจจาก FPS จริง หลังตั้งไปแล้ว 5 วินาทีขึ้นไป: ถ้ายังสูงกว่าเพดานมาก = ตัวรันรับคำสั่งแต่ไม่ทำจริง
+    -- (ถ้าเครื่องช้ากว่า cap อยู่แล้ว แยกไม่ออกว่า cap ติดหรือไม่ จะขึ้น set ตามปกติ)
+    if fps > 0 and os.clock() - capSetAt >= 5 and fps > cap * 1.5 + 2 then
+        capInfo = "noeff" .. tostring(fps)
+    else
+        capInfo = "set" .. tostring(cap)
     end
-    -- ฟังก์ชันสำรอง: setfflag (ไม่ยืนยันว่าได้ผลในทุกเอ็กซิคิวเตอร์)
-    if setfflag then
-        local ok = pcall(setfflag, "DFIntTaskSchedulerTargetFps", tostring(cap))
-        capInfo = ok and ("flag" .. tostring(cap)) or "nofn"
-        return
-    end
-    capInfo = "nofn"
 end
 pcall(applyCap)
 
 local lastFrame = os.clock()
-local frames, fps, winStart = 0, 0, os.clock()
+local frames, winStart = 0, os.clock()
 RunService.Heartbeat:Connect(function()
     local now = os.clock()
     lastFrame = now
@@ -1198,10 +1209,10 @@ def cap_txt(rec):
         return " | cap: เอ็กซิคิวเตอร์ไม่มี setfpscap"
     if c == "err":
         return " | cap: เรียกแล้ว error"
+    if c.startswith("noeff"):
+        return " | cap: ตั้งแล้วแต่ไม่ติด (FPS จริง %s ตัวรันอาจไม่รองรับหรือมีตั้งค่าทับ)" % num
     if c.startswith("ign"):
         return " | cap: เรียกแล้วแต่ไม่ติด (อ่านกลับได้ %s)" % num
-    if c.startswith("flag"):
-        return " | cap: ใช้ FFlag สำรอง %s (ไม่ยืนยัน)" % num
     if c.startswith("set"):
         return " | cap %s ✓" % num
     return ""
@@ -2618,20 +2629,48 @@ def launch_all_roblox(cfg):
     pause()
 
 
+def kill_all_roblox(cfg):
+    """ปิด Roblox ทุกอินสแตนซ์ที่สแกนเจอ (force-stop) ต้องใช้รูท"""
+    pkgs = list(cfg.d["detected"])
+    if not pkgs:
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
+        return pause()
+    if not ENV.root:
+        say("ปิดแอปอื่นไม่ได้ถ้าไม่มีรูท (force-stop ต้องใช้สิทธิ์รูท)", "red")
+        return pause()
+    if not confirm("ปิด Roblox ทั้งหมด %d อินสแตนซ์ (ทุกตัวที่สแกนเจอ ไม่ใช่เฉพาะที่เลือก)?" % len(pkgs)):
+        return
+    done = 0
+    for i, pkg in enumerate(pkgs, 1):
+        try:
+            rc, out = sh(AM() + " force-stop " + shlex.quote(pkg), root=True, timeout=20)
+        except Exception as e:
+            rc, out = 1, str(e)
+        ok = rc == 0
+        done += 1 if ok else 0
+        say("[%d/%d] %s: %s" % (i, len(pkgs), pkg, "ปิดแล้ว" if ok else (scrub(out.strip()[:120]) or "ล้มเหลว")),
+            "green" if ok else "red")
+    say("ปิดสำเร็จ %d/%d อินสแตนซ์" % (done, len(pkgs)), "green" if done == len(pkgs) else "yellow")
+    pause()
+
+
 def menu_open_all(cfg):
     while True:
         banner(cfg)
-        t = Table(title="เปิด Roblox ทั้งหมด", box=box.ROUNDED, header_style="bold cyan")
+        t = Table(title="เปิด / ปิด Roblox ทั้งหมด", box=box.ROUNDED, header_style="bold cyan")
         for col in ("#", "รายการ", "ค่า"):
             t.add_column(col)
         t.add_row("1", "เปิด Roblox ทุกอินสแตนซ์ที่เลือกตอนนี้ (ทีละตัว ไม่ force-stop)", "")
         t.add_row("2", "หน่วงระหว่างตัว (วินาที, 0-600)", str(cfg.d.get("open_all_delay", 10)))
+        t.add_row("3", "ปิด Roblox ทั้งหมด (force-stop ทุกอินสแตนซ์ที่สแกนเจอ ต้องใช้รูท)", "")
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c == "1":
             launch_all_roblox(cfg)
+        elif c == "3":
+            kill_all_roblox(cfg)
         elif c == "2":
             v = ask("ค่าหน่วงใหม่ (0-600):")
             if v.isdigit() and 0 <= int(v) <= 600:
@@ -3120,7 +3159,7 @@ def menu_list(cfg):
 MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
         ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
-        ("9", "เปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("0", "ออก")]
+        ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("0", "ออก")]
 
 
 def main():
