@@ -3141,7 +3141,7 @@ def menu_webhook(cfg, hook):
 
 
 def menu_list(cfg):
-    """Menu 10: static list of detected instances (no live refresh, no network)."""
+    """Menu 10: list of detected instances + heartbeat ID, account name and Roblox ID (name/ID fetched from the cookie)."""
     det = cfg.d["detected"]
     if not det:
         say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
@@ -3149,12 +3149,21 @@ def menu_list(cfg):
     pairs, n_ck = cookie_pairs(cfg)
     cmap = dict(pairs)
     sel = selected_packages(cfg)
+    who = {}                                   # pkg -> (name, uid); stays empty on bad cookie / no network
+    if cmap:
+        say("กำลังดึงชื่อบัญชี / Roblox ID จากคุกกี้...", "dim")
+        for pkg, ck in pairs:
+            uid, name, _ = who_am_i(make_session(ck))
+            if uid:
+                who[pkg] = (name, str(uid))
     banner(cfg)
     t = Table(title="รายการอินสแตนซ์ (%d)" % len(det), box=box.ROUNDED, header_style="bold cyan")
-    for col in ("#", "แพ็กเกจ", "เลือกรัน", "คุกกี้"):
+    for col in ("#", "แพ็กเกจ", "Heartbeat ID", "บัญชี", "Roblox ID", "เลือกรัน", "คุกกี้"):
         t.add_column(col)
     for i, pkg in enumerate(det, 1):
-        t.add_row(str(i), pkg, onoff(pkg in sel), Text("มี", style="green") if pkg in cmap else Text("-", style="dim"))
+        name, uid = who.get(pkg, ("-", "-"))
+        t.add_row(str(i), pkg, re.sub(r"[^\w.\-]", "", pkg), name, uid, onoff(pkg in sel),
+                  Text("มี", style="green") if pkg in cmap else Text("-", style="dim"))
     console.print(t)
     link = cfg.d["game_link"]
     say("เลือกรัน %d/%d | คุกกี้ในไฟล์ %d บรรทัด | ลิงก์เกม: %s" % (
