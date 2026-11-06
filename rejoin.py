@@ -3171,10 +3171,68 @@ def menu_list(cfg):
     pause()
 
 
+UPDATE_URL = "https://raw.githubusercontent.com/Garnt024020806/TOOL/main/rejoin.py"
+
+
+def _ver_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v)) or (0,)
+
+
+def run_update():
+    """Fetch rejoin.py from GitHub, compare VERSION, replace this file only when the remote is newer.
+    -> "latest" | "updated" | "newer_local" | "error" """
+    say("เวอร์ชันปัจจุบัน v%s กำลังเช็คเวอร์ชันบน GitHub..." % VERSION, "dim")
+    try:
+        r = requests.get(UPDATE_URL, timeout=20, headers={"Cache-Control": "no-cache"})
+    except Exception as e:
+        say("ต่อ GitHub ไม่ได้: %s" % scrub(e)[:80], "red")
+        return "error"
+    if r.status_code != 200:
+        say("โหลดไม่สำเร็จ HTTP %d" % r.status_code, "red")
+        return "error"
+    code = r.content.replace(b"\r\n", b"\n")
+    m = re.search(r'^VERSION\s*=\s*"([^"]+)"', code.decode("utf-8", "replace"), re.M)
+    if not m:
+        say("ไฟล์บน GitHub ไม่มี VERSION ไม่อัปเดต", "red")
+        return "error"
+    remote = m.group(1)
+    rt, lt = _ver_tuple(remote), _ver_tuple(VERSION)
+    if rt == lt:
+        say("ตัวนี้เป็นเวอร์ชันล่าสุดแล้ว (v%s) ไม่ต้องอัปเดต" % VERSION, "green")
+        return "latest"
+    if rt < lt:
+        say("เครื่องใหม่กว่า GitHub (เครื่อง v%s / GitHub v%s) ไม่ลดเวอร์ชัน" % (VERSION, remote), "yellow")
+        return "newer_local"
+    try:
+        compile(code, "rejoin.py", "exec")          # never install a file that doesn't even parse
+    except SyntaxError as e:
+        say("ไฟล์ใหม่มีโค้ดพัง (%s) ไม่อัปเดต" % e, "red")
+        return "error"
+    me = os.path.abspath(__file__)
+    try:
+        shutil.copy2(me, me + ".bak")
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(me), suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(code)
+        os.replace(tmp, me)
+    except Exception as e:
+        say("เขียนไฟล์ไม่ได้: %s" % scrub(e)[:80], "red")
+        return "error"
+    sd = "/sdcard/Download/rejoin.py"                # setup.sh keeps a copy here too
+    if os.path.isfile(sd) and os.path.abspath(sd) != me:
+        try:
+            with open(sd, "wb") as f:
+                f.write(code)
+        except Exception:
+            pass
+    say("อัปเดตแล้ว v%s -> v%s (เก็บของเก่าไว้ที่ %s.bak) รันโปรแกรมใหม่เพื่อใช้เวอร์ชันนี้" % (VERSION, remote, os.path.basename(me)), "green")
+    return "updated"
+
+
 MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
         ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
-        ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("0", "ออก")]
+        ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("11", "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)"), ("0", "ออก")]
 
 
 def main():
@@ -3224,12 +3282,17 @@ def main():
             menu_open_all(cfg)
         elif c == "10":
             menu_list(cfg)
+        elif c == "11":
+            run_update()
+            pause()
         elif c == "0":
             say("ลาก่อน!", "cyan")
             return
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("update", "--update", "-u"):
+        sys.exit(0 if run_update() != "error" else 1)
     try:
         main()
     except KeyboardInterrupt:
