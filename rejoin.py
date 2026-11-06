@@ -1363,13 +1363,19 @@ class Heartbeats:
         return True
 
     def latest(self, inst):
+        """Look up by id in strict order: pkg -> idx -> user -> auto (single instance only).
+        No more max(ts) across keys, so one clone can't steal another clone's heartbeat."""
         with self.lock:
-            recs = [self.d[k] for k in (inst.pkg, str(inst.idx)) if k in self.d]
-            if inst.user and inst.user in self.by_user:
-                recs.append(self.by_user[inst.user])
-            if self.single and "auto" in self.d:
-                recs.append(self.d["auto"])
-        return max(recs, key=lambda r: r["ts"]) if recs else None
+            order = [self.d.get(inst.pkg), self.d.get(str(inst.idx))]
+            if inst.user:
+                order.append(self.by_user.get(inst.user))
+            if self.single:
+                order.append(self.d.get("auto"))
+            recs = [r for r in order if r]
+        for r in recs:                      # first id in order that is fresh since the last launch
+            if r["ts"] >= inst.launched_at:
+                return r
+        return recs[0] if recs else None    # none fresh: first match, hb_state() will call it stale
 
 
 class HBServer:
