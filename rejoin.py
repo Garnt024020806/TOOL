@@ -46,8 +46,10 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.7"
+VERSION = "1.9"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
+ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
+KNOWN_EXEC_DIRS = ("/storage/emulated/0/Delta/Autoexecute", ARCEUS_AUTOEXEC)
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
  ██████╗  █████╗ ██████╗ ███╗   ██╗████████╗
@@ -197,7 +199,10 @@ DEFAULTS = {
     "heartbeat": {"enabled": True, "port": 8765, "interval": 15, "timeout": 90, "show_fps": True,
                   "fps_cap": {"default": 0, "accounts": {}}},   # accounts: {"<Roblox UserId>": {"name": ..., "cap": N}}; default 0 = leave FPS alone
     "autoexec": {"auto_create": True, "enabled_once": False, "filename": "heartbeat.lua",
-                 "dirs": ["/storage/emulated/0/Delta/Autoexecute"]},   # {pkg} in a path = one folder per clone
+                 "arceus_added": False,
+                 "dirs": ["/storage/emulated/0/Delta/Autoexecute",
+                          "/storage/emulated/0/Arceus X/Autoexec"]},   # {pkg} in a path = one folder per clone
+    "update": {"check": True, "hours": 6, "notified": ""},   # background version check; notified = last version already pushed to webhook
     "performance": {"low_cpu": True, "ui_refresh_sec": 2},
     "ui": {"streamer_mode": True},   # hide account names on screen (first 4 chars + #)
     "console_webhook": {"enabled": False, "url": "", "flush_sec": 10},   # blank url = reuse the main webhook
@@ -208,7 +213,7 @@ DEFAULTS = {
         "enabled": False,
         "send_screenshot": True,
         "periodic_min": 10,   # status report + screenshot every N minutes (0 = off)
-        "events": {"start": True, "crash": True, "rejoin": True, "stop": True, "status": True},
+        "events": {"start": True, "crash": True, "rejoin": True, "stop": True, "status": True, "update": True},
     },
 }
 
@@ -241,7 +246,13 @@ class Config:
             except OSError:
                 pass
             raw = {}
-        return merge(DEFAULTS, raw)
+        d = merge(DEFAULTS, raw)
+        a = d["autoexec"]
+        if not a.get("arceus_added"):
+            if ARCEUS_AUTOEXEC not in a["dirs"]:
+                a["dirs"].append(ARCEUS_AUTOEXEC)
+            a["arceus_added"] = True
+        return d
 
     def save(self):
         with self.lock:
@@ -434,6 +445,7 @@ def AM():
 
 
 RAM_LAST = {"detail": ""}
+DROP = {"ok": None}   # None = not probed yet
 
 
 KEEP_PKGS = ["com.termux", "com.android.systemui", "com.topjohnwu.magisk"]
@@ -446,17 +458,19 @@ def kill_others(cfg):
     _, o3 = sh("pm list packages -3", root=True, timeout=30)
     third = {l.split(":", 1)[1].strip() for l in o3.splitlines() if l.startswith("package:")}
     snap = snapshot()
-    if not snap["ps_ok"]:
-        raise RuntimeError("cannot list processes")
-    running = {p.split(":")[0] for p in snap["procs"]}
+    ps_ok = snap["ps_ok"]                              # ps is blocked on some cloud phones/containers
+    running = {p.split(":")[0] for p in snap["procs"]} if ps_ok else set()
     # termux/root managers are ALWAYS protected, whatever the user types in the protect list
     prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [x.lower() for x in prefixes(cfg)] + [
                                                                       "termux", "magisk", "kernelsu", "supersu"])
     keep = set(cfg.d["detected"]) | set(KEEP_PKGS) | {home_pkg()}
-    victims = [p for p in sorted(third & running) if p not in keep and not any(x in p.lower() for x in prot)]
-    for p in victims:
-        sh(AM() + " force-stop " + shlex.quote(p), root=True, timeout=20)
-    return victims
+    pool = (third & running) if ps_ok else third       # no process list: force-stop is harmless on idle apps
+    victims = [p for p in sorted(pool) if p not in keep and not any(x in p.lower() for x in prot)]
+    if not ps_ok:
+        victims = victims[:60]
+    if victims:                                        # ONE shell call instead of one per app
+        sh("; ".join(AM() + " force-stop " + shlex.quote(p) for p in victims), root=True, timeout=60)
+    return victims, ps_ok
 
 
 def drop_ram(kill_cached=False, cfg=None):
@@ -467,23 +481,31 @@ def drop_ram(kill_cached=False, cfg=None):
         return False, None, None
     before = mem_available_mb()
     steps = []
-    rc, out = sh("sync; echo 3 > /proc/sys/vm/drop_caches", root=True, timeout=40)
-    steps.append(("drop_caches", rc == 0, out))
-    if rc != 0:  # read-only /proc/sys (containers / cloud phones) or SELinux: try sysctl
-        rc, out = sh("sysctl -w vm.drop_caches=3", root=True, timeout=20)
-        steps.append(("sysctl", rc == 0, out))
+    if DROP["ok"] is None:                             # probe once per run: /proc/sys is read-only on containers/cloud phones
+        rc, _ = sh("[ -w /proc/sys/vm/drop_caches ]", root=True, timeout=15)
+        DROP["ok"] = (rc == 0)
+        if not DROP["ok"]:
+            steps.append(("drop_caches", False, "unavailable here (read-only), skipped from now on"))
+    if DROP["ok"]:
+        rc, out = sh("sync; echo 3 > /proc/sys/vm/drop_caches", root=True, timeout=40)
+        if rc != 0:
+            DROP["ok"] = False                         # don't retry every cycle
+            steps.append(("drop_caches", False, "denied, skipped from now on"))
+        else:
+            steps.append(("drop_caches", True, ""))
     if kill_cached:
         rc, out = sh(AM() + " kill-all", root=True, timeout=30)
-        steps.append(("kill-all", rc == 0, out))
+        steps.append(("kill-all", rc == 0, "" if rc == 0 else "failed"))
     if cfg is not None and cfg.d["ram"]["kill_others"]:
         try:
-            v = kill_others(cfg)
-            steps.append(("kill-others", True, ("closed %d: %s" % (len(v), ", ".join(v))) if v else "nothing to close"))
+            v, ps_ok = kill_others(cfg)
+            note = "" if ps_ok else " (no process list: stopped all non-protected apps)"
+            steps.append(("kill-others", True, ("closed %d%s" % (len(v), note)) if v else "nothing to close"))
         except Exception as e:
-            steps.append(("kill-others", False, str(e)))
+            steps.append(("kill-others", False, "failed (%s)" % type(e).__name__))
     time.sleep(1)
     RAM_LAST["detail"] = "; ".join(
-        "%s: %s" % (n, "ok" if (ok and not m.strip()) else (" ".join(m.split())[:160] or "failed")) for n, ok, m in steps)
+        "%s: %s" % (n, "ok" if (ok and not m.strip()) else (" ".join(m.split())[:80] or "failed")) for n, ok, m in steps)
     log.info("ram steps: %s", RAM_LAST["detail"])
     return any(ok for _, ok, _ in steps), before, mem_available_mb()
 
@@ -877,7 +899,7 @@ def store_cookies(cfg, found):
 
 # ----------------------------------------------------------------- discord webhook
 HOOK_RE = re.compile(r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$")
-EV_COLOR = {"status": 0xF1C40F, "start": 0x2ECC71, "crash": 0xE74C3C, "rejoin": 0x3498DB, "stop": 0x95A5A6, "test": 0x9B59B6}
+EV_COLOR = {"status": 0xF1C40F, "start": 0x2ECC71, "crash": 0xE74C3C, "rejoin": 0x3498DB, "stop": 0x95A5A6, "test": 0x9B59B6, "update": 0xF39C12}
 
 
 class Hook:
@@ -1305,6 +1327,8 @@ def install_autoexec(cfg):
     a, h = cfg.d["autoexec"], cfg.d["heartbeat"]
     res = []
     for d, ident in autoexec_targets(cfg):
+        if d in KNOWN_EXEC_DIRS and not os.path.isdir(os.path.dirname(d)):
+            continue                                   # executor not installed: don't litter /sdcard with its folder
         path = os.path.join(d, a["filename"])
         src = render_lua(ident, h["port"], h["interval"], h.get("show_fps", True), *fps_caps(cfg))
         try:
@@ -2024,6 +2048,8 @@ def banner(cfg):
         ("   Webhook: ", "dim"), ("เปิด" if cfg.d["webhook"]["enabled"] else "ปิด",
                                   "green" if cfg.d["webhook"]["enabled"] else "red")))
     console.print(Text("โฟลเดอร์: " + BASE, style="dim"))
+    if UPDATE_INFO["remote"]:
+        console.print(Text("🆕 มีเวอร์ชันใหม่ v%s (ตอนนี้ v%s) → เลือกเมนู 11 เพื่ออัปเดต" % (UPDATE_INFO["remote"], VERSION), style="bold yellow"))
     console.print()
 
 
@@ -2953,7 +2979,7 @@ def menu_heartbeat(cfg):
         t.add_row("3", "สคริปต์ส่งทุก (วินาที)", str(h["interval"]))
         t.add_row("4", "ถือว่าหยุดส่งเมื่อเงียบเกิน (วินาที)", str(h["timeout"]))
         t.add_row("5", "สร้างไฟล์สคริปต์ .lua ให้แต่ละอินสแตนซ์ (โฟลเดอร์ heartbeat/)", "")
-        t.add_row("6", "โฟลเดอร์ autoexec ของ Delta (ใส่ {pkg} = แยกโฟลเดอร์ต่อโคลน)", T(", ".join(cfg.d["autoexec"]["dirs"])))
+        t.add_row("6", "โฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ (Delta / Arceus X, ใส่ {pkg} = แยกโฟลเดอร์ต่อโคลน)", T(", ".join(cfg.d["autoexec"]["dirs"])))
         t.add_row("7", "สร้าง/อัปเดต heartbeat.lua ในโฟลเดอร์นั้นอัตโนมัติ", onoff(cfg.d["autoexec"]["auto_create"]))
         t.add_row("8", "สร้าง/อัปเดต heartbeat.lua ตอนนี้", "")
         t.add_row("9", "แสดงตัวเลข FPS บนจอเกม (ลากได้ ไม่มีกรอบ ปรับขนาดตามจอ)", onoff(h["show_fps"]))
@@ -3178,6 +3204,50 @@ def _ver_tuple(v):
     return tuple(int(x) for x in re.findall(r"\d+", v)) or (0,)
 
 
+UPDATE_INFO = {"remote": None, "checked": 0.0}
+
+
+def check_new_version(cfg=None, hook=None):
+    """Silent check: remote VERSION -> UPDATE_INFO. Pushes a webhook once per new version. Never raises."""
+    try:
+        r = requests.get(UPDATE_URL, timeout=10, headers={"Cache-Control": "no-cache"})
+        if r.status_code != 200:
+            return None
+        m = re.search(r'^VERSION\s*=\s*"([^"]+)"', r.text, re.M)
+        if not m:
+            return None
+        remote = m.group(1)
+        UPDATE_INFO["checked"] = time.time()
+        if _ver_tuple(remote) <= _ver_tuple(VERSION):
+            UPDATE_INFO["remote"] = None
+            return None
+        UPDATE_INFO["remote"] = remote
+        log.info("มีเวอร์ชันใหม่ v%s (ตอนนี้ v%s)", remote, VERSION)
+        if cfg and hook and cfg.d["update"].get("notified") != remote:
+            cfg.d["update"]["notified"] = remote
+            cfg.save()
+            hook.send("update", "🆕 มีเวอร์ชันใหม่", "v%s -> v%s  (เมนู 11 หรือ python rejoin.py update)" % (VERSION, remote))
+        return remote
+    except Exception as e:
+        log.debug("เช็คเวอร์ชันไม่ได้: %s", scrub(e))
+        return None
+
+
+def start_update_watch(cfg, hook):
+    if not cfg.d["update"].get("check", True):
+        return
+
+    def loop():
+        while True:
+            check_new_version(cfg, hook)
+            try:
+                hrs = max(1, int(cfg.d["update"].get("hours", 6)))
+            except (TypeError, ValueError):
+                hrs = 6
+            time.sleep(hrs * 3600)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def run_update():
     """Fetch rejoin.py from GitHub, compare VERSION, replace this file only when the remote is newer.
     -> "latest" | "updated" | "newer_local" | "error" """
@@ -3226,6 +3296,7 @@ def run_update():
         except Exception:
             pass
     say("อัปเดตแล้ว v%s -> v%s (เก็บของเก่าไว้ที่ %s.bak) รันโปรแกรมใหม่เพื่อใช้เวอร์ชันนี้" % (VERSION, remote, os.path.basename(me)), "green")
+    UPDATE_INFO["remote"] = None
     return "updated"
 
 
@@ -3241,6 +3312,7 @@ def main():
     STREAMER["on"] = bool(cfg.d["ui"]["streamer_mode"])
     setup_logging()
     hook = Hook(cfg)
+    start_update_watch(cfg, hook)
     apply_perf(cfg)
     log.info("เริ่มโปรแกรม โหมด=%s โฟลเดอร์=%s", "root" if ENV.root else "non-root", BASE)
     if not STORAGE_OK:
