@@ -47,7 +47,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.10"
+VERSION = "1.9"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
 KNOWN_EXEC_DIRS = ("/storage/emulated/0/Delta/Autoexecute", ARCEUS_AUTOEXEC)
@@ -597,7 +597,7 @@ def parse_link(link):
     return None
 
 
-TILE = {"on": False, "cols": 0, "rows": 0}
+TILE = {"on": False, "cols": 0, "rows": 0, "last": ""}
 _TILE_TIMER = {"t": None}
 _TILE_LOCK = threading.Lock()
 
@@ -611,11 +611,13 @@ def sync_tile(cfg):
 
 def open_game(pkg, uri, force_stop):
     q = shlex.quote
-    if ENV.root and force_stop:
+    use_win = bool(ENV.root and TILE["on"])
+    # windowingMode ถูกกำหนดตอนสร้าง task เท่านั้น -> โหมดเรียงจอต้อง force-stop ก่อนทุกครั้ง
+    # ไม่งั้น task เดิมค้างเป็น fullscreen แล้ว resizeTask จะ throw "not allowed"
+    if ENV.root and (force_stop or use_win):
         sh(AM() + " force-stop " + q(pkg), root=True, timeout=20)
         time.sleep(2)
-    tail = "-a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
-    use_win = bool(ENV.root and TILE["on"])   # โหมดเรียงจอ: เปิดเป็นหน้าต่างลอย (freeform) เพื่อให้ย่อ/ย้ายได้
+    tail = "-a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))   # โหมดเรียงจอ: เปิดเป็นหน้าต่างลอย (freeform) เพื่อให้ย่อ/ย้ายได้
     cmd = AM() + " start " + ("--windowingMode 5 " if use_win else "") + tail
     rc, out = sh(cmd, root=ENV.root, timeout=30)
     if use_win and (rc != 0 or re.search(r"Error|Exception|unable to resolve|Unknown option", out, re.I)):
@@ -687,12 +689,51 @@ def tile_windows(cfg):
         n = 0
         for (tid, _pkg), (l, t, r, b) in zip(tasks, grid_positions(sw, sh_, len(tasks), TILE["cols"], TILE["rows"])):
             sh("%s task resizeable %d 2" % (AM(), tid), root=True, timeout=10)
-            rc, _ = sh("%s task resize %d %d %d %d %d" % (AM(), tid, l, t, r, b), root=True, timeout=10)
+            rc, o = sh("%s task resize %d %d %d %d %d" % (AM(), tid, l, t, r, b), root=True, timeout=10)
             n += 1 if rc == 0 else 0
+            if rc != 0:
+                TILE["last"] = scrub(o.strip()[:200])
         return n
     except Exception as e:
         log.warning("tile_windows: %s", e)
         return 0
+
+
+def tile_enable_freeform():
+    """เปิดการรองรับหน้าต่างลอยของ Android (บางเครื่องต้องรีบูตหนึ่งครั้งหลังตั้งค่า)"""
+    out = []
+    for k in ("enable_freeform_support", "force_resizable_activities", "enable_non_resizable_multi_window"):
+        rc, o = sh("settings put global %s 1" % k, root=True, timeout=8)
+        out.append("%s = 1 -> %s" % (k, "ok" if rc == 0 else "ล้มเหลว " + o.strip()[:80]))
+    return out
+
+
+def tile_diagnose(cfg):
+    """รายงานสถานะทีละขั้นของระบบเรียงจอ เพื่อดูว่าติดตรงไหน"""
+    L = []
+    _, v = sh("getprop ro.build.version.release", timeout=5)
+    L.append("Android: %s | รูท: %s | โหมดเรียงจอ: %s (cols=%s rows=%s)" % (
+        v.strip() or "?", "ใช่" if ENV.root else "ไม่", "เปิด" if TILE["on"] else "ปิด", TILE["cols"], TILE["rows"]))
+    for k in ("enable_freeform_support", "force_resizable_activities"):
+        _, o = sh("settings get global %s" % k, root=True, timeout=5)
+        L.append("%s = %s" % (k, o.strip() or "null"))
+    L.append("ขนาดจอ: %dx%d" % screen_size())
+    rc, o = sh(AM() + " stack list", root=True, timeout=15)
+    L.append("am stack list: rc=%s ยาว %d บรรทัด" % (rc, len(o.splitlines())))
+    L += ["   " + ln[:110] for ln in o.splitlines()[:8]]
+    tasks = task_ids(cfg)
+    L.append("หน้าต่างที่พบ: %s" % (", ".join("#%d %s" % (t, p) for t, p in tasks) or "ไม่พบ"))
+    if tasks:
+        sw, sh_ = screen_size()
+        tid, _ = tasks[0]
+        l, t, r, b = grid_positions(sw, sh_, len(tasks), TILE["cols"], TILE["rows"])[0]
+        rc1, o1 = sh("%s task resizeable %d 2" % (AM(), tid), root=True, timeout=10)
+        rc2, o2 = sh("%s task resize %d %d %d %d %d" % (AM(), tid, l, t, r, b), root=True, timeout=10)
+        L.append("ทดสอบ resizeable: rc=%s %s" % (rc1, scrub(o1.strip()[:120])))
+        L.append("ทดสอบ resize #%d -> [%d,%d,%d,%d]: rc=%s %s" % (tid, l, t, r, b, rc2, scrub(o2.strip()[:120])))
+    if TILE["last"]:
+        L.append("ข้อผิดพลาดล่าสุด: " + TILE["last"])
+    return L
 
 
 def tile_later(cfg, delay=None):
@@ -2803,6 +2844,8 @@ def menu_open_all(cfg):
         t.add_row("5", "เรียงจอ: จำนวนคอลัมน์ (0 = อัตโนมัติ)", str(tl["cols"]))
         t.add_row("6", "เรียงจอ: จำนวนแถว (0 = อัตโนมัติ, ใช้เมื่อคอลัมน์ = 0)", str(tl["rows"]))
         t.add_row("7", "เรียงจอเดี๋ยวนี้ (หน้าต่างที่เปิดอยู่)", "")
+        t.add_row("8", "ตรวจสอบระบบเรียงจอ (แสดงว่าติดตรงไหน)", "")
+        t.add_row("9", "เปิดการรองรับหน้าต่างลอยของ Android (freeform)", "")
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
@@ -2828,6 +2871,19 @@ def menu_open_all(cfg):
             elif v:
                 say("ค่าต้องอยู่ระหว่าง 0-12", "red")
                 pause()
+        elif c == "8":
+            sync_tile(cfg)
+            for ln in (tile_diagnose(cfg) if ENV.root else ["ต้องใช้รูท"]):
+                say(ln, "dim")
+            pause()
+        elif c == "9":
+            if not ENV.root:
+                say("ต้องใช้รูท", "red")
+            else:
+                for ln in tile_enable_freeform():
+                    say(ln, "dim")
+                say("ถ้ายังไม่ได้ผล ให้รีบูตเครื่องหนึ่งครั้ง แล้วเปิดแอป Roblox ใหม่", "yellow")
+            pause()
         elif c == "7":
             if not ENV.root:
                 say("ต้องใช้รูท", "red")
