@@ -178,7 +178,6 @@ DEFAULTS = {
     "launch_delay": 15,
     "block_gap_sec": 20,   # social menu item 5: min seconds between two blocks from the SAME account (Roblox ~3/min per cookie)
     "open_all_delay": 10,   # main menu 9: seconds between opening each Roblox instance
-    "tile": {"enabled": False, "cols": 0, "rows": 0, "settle_sec": 4},   # เรียงจอ: จัดหน้าต่าง Roblox เป็นตาราง (ต้องรูท) cols/rows 0 = อัตโนมัติ
     "package_prefix": "com.roblox.",
     "extra_prefixes": ["aya."],   # also scanned / protected / checked exactly like package_prefix
     "packages": [],          # empty = run every detected package
@@ -450,7 +449,7 @@ RAM_LAST = {"detail": ""}
 DROP = {"ok": None}   # None = not probed yet
 
 
-KEEP_PKGS = ["com.termux", "com.android.systemui", "com.topjohnwu.magisk"]
+KEEP_PKGS = ["com.termux", "com.android.systemui", "com.topjohnwu.magisk", "ahapps.controlthescreenorientation"]
 
 
 def kill_others(cfg):
@@ -464,7 +463,7 @@ def kill_others(cfg):
     running = {p.split(":")[0] for p in snap["procs"]} if ps_ok else set()
     # termux/root managers are ALWAYS protected, whatever the user types in the protect list
     prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [x.lower() for x in prefixes(cfg)] + [
-                                                                      "termux", "magisk", "kernelsu", "supersu"])
+                                                                      "termux", "magisk", "kernelsu", "supersu", "controlthescreenorientation"])
     keep = set(cfg.d["detected"]) | set(KEEP_PKGS) | {home_pkg()}
     pool = (third & running) if ps_ok else third       # no process list: force-stop is harmless on idle apps
     victims = [p for p in sorted(pool) if p not in keep and not any(x in p.lower() for x in prot)]
@@ -597,157 +596,19 @@ def parse_link(link):
     return None
 
 
-TILE = {"on": False, "cols": 0, "rows": 0, "last": ""}
-_TILE_TIMER = {"t": None}
-_TILE_LOCK = threading.Lock()
-
-
-def sync_tile(cfg):
-    t = cfg.d.get("tile") or {}
-    TILE["on"] = bool(t.get("enabled"))
-    TILE["cols"] = max(0, int(t.get("cols") or 0))
-    TILE["rows"] = max(0, int(t.get("rows") or 0))
-
-
 def open_game(pkg, uri, force_stop):
     q = shlex.quote
-    use_win = bool(ENV.root and TILE["on"])
-    # windowingMode ถูกกำหนดตอนสร้าง task เท่านั้น -> โหมดเรียงจอต้อง force-stop ก่อนทุกครั้ง
-    # ไม่งั้น task เดิมค้างเป็น fullscreen แล้ว resizeTask จะ throw "not allowed"
-    if ENV.root and (force_stop or use_win):
+    if ENV.root and force_stop:
         sh(AM() + " force-stop " + q(pkg), root=True, timeout=20)
         time.sleep(2)
-    tail = "-a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))   # โหมดเรียงจอ: เปิดเป็นหน้าต่างลอย (freeform) เพื่อให้ย่อ/ย้ายได้
-    cmd = AM() + " start " + ("--windowingMode 5 " if use_win else "") + tail
-    rc, out = sh(cmd, root=ENV.root, timeout=30)
-    if use_win and (rc != 0 or re.search(r"Error|Exception|unable to resolve|Unknown option", out, re.I)):
-        rc, out = sh(AM() + " start " + tail, root=ENV.root, timeout=30)   # เครื่องไม่รองรับ freeform -> เปิดแบบปกติ
+    tail = "-a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
+    rc, out = sh(AM() + " start " + tail, root=ENV.root, timeout=30)
     if rc != 0 or re.search(r"Error|Exception|unable to resolve", out, re.I):
         rc, out2 = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % q(pkg), root=ENV.root, timeout=30)
         if rc != 0:
             return False, scrub((out + out2).strip()[:200])
         return True, "เปิดแอปแล้วแต่ลิงก์เกมไม่ทำงาน (ใช้ launcher แทน)"
     return True, "ok"
-
-
-# ----------------------------------------------------------------- เรียงจอ (tile windows)
-def screen_size():
-    """(กว้าง, สูง) ของจอ โดยกว้าง = ด้านยาวเสมอ (แนวนอน)"""
-    w, h = 1280, 720
-    _, o = sh("wm size", timeout=5)
-    for line in o.splitlines():
-        if "Override size:" in line or "Physical size:" in line:   # Override อยู่หลัง Physical จึงทับกัน
-            try:
-                w, h = map(int, line.split(":", 1)[1].strip().split("x"))
-            except ValueError:
-                pass
-    return max(w, h), min(w, h)
-
-
-def grid_positions(sw, sh_, n, cols=0, rows=0):
-    """แบ่งจอเป็นตาราง n ช่อง -> [(left, top, right, bottom)] cols/rows = 0 คืออัตโนมัติตามสัดส่วนจอ"""
-    if n <= 0:
-        return []
-    if cols <= 0 and rows > 0:
-        cols = math.ceil(n / rows)
-    if cols <= 0:
-        cols = max(1, math.ceil(math.sqrt(n * sw / max(sh_, 1))))
-    rows = max(1, math.ceil(n / cols))
-    cw, ch = sw // cols, sh_ // rows
-    out = []
-    for i in range(n):
-        c, r = i % cols, i // cols
-        out.append((c * cw, r * ch, c * cw + cw, r * ch + ch))
-    return out
-
-
-def task_ids(cfg):
-    """[(taskId, package)] ของหน้าต่าง Roblox ที่เปิดอยู่ เรียงตามชื่อแพ็กเกจให้ตำแหน่งคงที่"""
-    pfx = prefixes(cfg)
-    found = {}
-    _, out = sh(AM() + " stack list", root=True, timeout=15)
-    for m in re.finditer(r"taskId=(\d+):\s*([\w.]+)/", out):
-        if m.group(2).startswith(pfx):
-            found[int(m.group(1))] = m.group(2)
-    if not found:   # เครื่องใหม่ที่ไม่มี am stack list
-        _, out = sh("dumpsys activity activities", root=True, timeout=20)
-        for m in re.finditer(r"Task\{[0-9a-f]+ #(\d+)[^}]*?A=\d+:([\w.]+)", out):
-            if m.group(2).startswith(pfx):
-                found[int(m.group(1))] = m.group(2)
-    return sorted(found.items(), key=lambda kv: (kv[1], kv[0]))
-
-
-def tile_windows(cfg):
-    """จัดหน้าต่าง Roblox ทั้งหมดเป็นตารางเต็มจอ คืนจำนวนหน้าต่างที่จัดได้ (ต้องรูท)"""
-    if not ENV.root:
-        return 0
-    try:
-        tasks = task_ids(cfg)
-        if not tasks:
-            return 0
-        sw, sh_ = screen_size()
-        n = 0
-        for (tid, _pkg), (l, t, r, b) in zip(tasks, grid_positions(sw, sh_, len(tasks), TILE["cols"], TILE["rows"])):
-            sh("%s task resizeable %d 2" % (AM(), tid), root=True, timeout=10)
-            rc, o = sh("%s task resize %d %d %d %d %d" % (AM(), tid, l, t, r, b), root=True, timeout=10)
-            n += 1 if rc == 0 else 0
-            if rc != 0:
-                TILE["last"] = scrub(o.strip()[:200])
-        return n
-    except Exception as e:
-        log.warning("tile_windows: %s", e)
-        return 0
-
-
-def tile_enable_freeform():
-    """เปิดการรองรับหน้าต่างลอยของ Android (บางเครื่องต้องรีบูตหนึ่งครั้งหลังตั้งค่า)"""
-    out = []
-    for k in ("enable_freeform_support", "force_resizable_activities", "enable_non_resizable_multi_window"):
-        rc, o = sh("settings put global %s 1" % k, root=True, timeout=8)
-        out.append("%s = 1 -> %s" % (k, "ok" if rc == 0 else "ล้มเหลว " + o.strip()[:80]))
-    return out
-
-
-def tile_diagnose(cfg):
-    """รายงานสถานะทีละขั้นของระบบเรียงจอ เพื่อดูว่าติดตรงไหน"""
-    L = []
-    _, v = sh("getprop ro.build.version.release", timeout=5)
-    L.append("Android: %s | รูท: %s | โหมดเรียงจอ: %s (cols=%s rows=%s)" % (
-        v.strip() or "?", "ใช่" if ENV.root else "ไม่", "เปิด" if TILE["on"] else "ปิด", TILE["cols"], TILE["rows"]))
-    for k in ("enable_freeform_support", "force_resizable_activities"):
-        _, o = sh("settings get global %s" % k, root=True, timeout=5)
-        L.append("%s = %s" % (k, o.strip() or "null"))
-    L.append("ขนาดจอ: %dx%d" % screen_size())
-    rc, o = sh(AM() + " stack list", root=True, timeout=15)
-    L.append("am stack list: rc=%s ยาว %d บรรทัด" % (rc, len(o.splitlines())))
-    L += ["   " + ln[:110] for ln in o.splitlines()[:8]]
-    tasks = task_ids(cfg)
-    L.append("หน้าต่างที่พบ: %s" % (", ".join("#%d %s" % (t, p) for t, p in tasks) or "ไม่พบ"))
-    if tasks:
-        sw, sh_ = screen_size()
-        tid, _ = tasks[0]
-        l, t, r, b = grid_positions(sw, sh_, len(tasks), TILE["cols"], TILE["rows"])[0]
-        rc1, o1 = sh("%s task resizeable %d 2" % (AM(), tid), root=True, timeout=10)
-        rc2, o2 = sh("%s task resize %d %d %d %d %d" % (AM(), tid, l, t, r, b), root=True, timeout=10)
-        L.append("ทดสอบ resizeable: rc=%s %s" % (rc1, scrub(o1.strip()[:120])))
-        L.append("ทดสอบ resize #%d -> [%d,%d,%d,%d]: rc=%s %s" % (tid, l, t, r, b, rc2, scrub(o2.strip()[:120])))
-    if TILE["last"]:
-        L.append("ข้อผิดพลาดล่าสุด: " + TILE["last"])
-    return L
-
-
-def tile_later(cfg, delay=None):
-    """สั่งเรียงจอแบบหน่วงเวลา (รวมคำสั่งที่ซ้อนกันเป็นครั้งเดียว) ไม่ทำอะไรถ้าปิดโหมดเรียงจอ"""
-    if not (TILE["on"] and ENV.root):
-        return
-    d = delay if delay is not None else max(1, int((cfg.d.get("tile") or {}).get("settle_sec", 4)))
-    with _TILE_LOCK:
-        if _TILE_TIMER["t"] is not None:
-            _TILE_TIMER["t"].cancel()
-        t = threading.Timer(d, tile_windows, args=(cfg,))
-        t.daemon = True
-        _TILE_TIMER["t"] = t
-        t.start()
 
 
 def take_shot(pkg):
@@ -1985,8 +1846,6 @@ class Engine:
         inst.launched_at = time.time()
         inst.pres_at = 0.0
         inst.state, inst.detail = "joining", "รอเข้าเกม"
-        if ok:
-            tile_later(self.cfg)
         if not ok:
             self.event("%s: เปิดเกมไม่สำเร็จ: %s" % (inst.label, msg), "red")
             return True
@@ -2777,24 +2636,15 @@ def launch_all_roblox(cfg):
         delay = max(0, int(cfg.d.get("open_all_delay", 10)))
     except (TypeError, ValueError):
         delay = 10
-    parsed = parse_link(cfg.d["game_link"])
-    uri = parsed[0] if parsed else None
-    say("จะเปิดเกมตามลิงก์ที่ตั้งไว้" if uri else
-        "ยังไม่ได้ตั้งลิงก์เกม จะเปิดแค่แอป Roblox", "dim")
     if not confirm("เปิด Roblox %d อินสแตนซ์ ห่างกันตัวละ %d วินาที?" % (len(pkgs), delay)):
         return
     done = 0
     try:
         for i, pkg in enumerate(pkgs, 1):
-            if uri:
-                ok, msg = open_game(pkg, uri, False)
-            else:
-                rc, out = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % shlex.quote(pkg),
-                             root=ENV.root, timeout=30)
-                ok, msg = rc == 0, (scrub(out.strip()[:120]) or "ok")
+            rc, out = sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % shlex.quote(pkg),
+                         root=ENV.root, timeout=30)
+            ok, msg = rc == 0, (scrub(out.strip()[:120]) or "ok")
             done += 1 if ok else 0
-            if ok:
-                tile_later(cfg)
             say("[%d/%d] %s: %s" % (i, len(pkgs), pkg, msg), "green" if ok else "red")
             if i < len(pkgs) and delay:
                 say("รอ %d วินาทีก่อนเปิดตัวถัดไป..." % delay, "dim")
@@ -2839,13 +2689,6 @@ def menu_open_all(cfg):
         t.add_row("1", "เปิด Roblox ทุกอินสแตนซ์ที่เลือกตอนนี้ (ทีละตัว ไม่ force-stop)", "")
         t.add_row("2", "หน่วงระหว่างตัว (วินาที, 0-600)", str(cfg.d.get("open_all_delay", 10)))
         t.add_row("3", "ปิด Roblox ทั้งหมด (force-stop ทุกอินสแตนซ์ที่สแกนเจอ ต้องใช้รูท)", "")
-        tl = cfg.d["tile"]
-        t.add_row("4", "เรียงจอ: จัดหน้าต่าง Roblox เป็นตารางอัตโนมัติ (ต้องรูท)", onoff(tl["enabled"]))
-        t.add_row("5", "เรียงจอ: จำนวนคอลัมน์ (0 = อัตโนมัติ)", str(tl["cols"]))
-        t.add_row("6", "เรียงจอ: จำนวนแถว (0 = อัตโนมัติ, ใช้เมื่อคอลัมน์ = 0)", str(tl["rows"]))
-        t.add_row("7", "เรียงจอเดี๋ยวนี้ (หน้าต่างที่เปิดอยู่)", "")
-        t.add_row("8", "ตรวจสอบระบบเรียงจอ (แสดงว่าติดตรงไหน)", "")
-        t.add_row("9", "เปิดการรองรับหน้าต่างลอยของ Android (freeform)", "")
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
@@ -2854,46 +2697,6 @@ def menu_open_all(cfg):
             launch_all_roblox(cfg)
         elif c == "3":
             kill_all_roblox(cfg)
-        elif c == "4":
-            tl["enabled"] = not tl["enabled"]
-            cfg.save()
-            sync_tile(cfg)
-            if tl["enabled"] and not ENV.root:
-                say("โหมดเรียงจอต้องใช้รูท เครื่องนี้ยังไม่พบรูท", "yellow")
-                pause()
-        elif c in ("5", "6"):
-            key = "cols" if c == "5" else "rows"
-            v = ask("ค่าใหม่ (0-12, 0 = อัตโนมัติ):")
-            if v.isdigit() and 0 <= int(v) <= 12:
-                tl[key] = int(v)
-                cfg.save()
-                sync_tile(cfg)
-            elif v:
-                say("ค่าต้องอยู่ระหว่าง 0-12", "red")
-                pause()
-        elif c == "8":
-            sync_tile(cfg)
-            for ln in (tile_diagnose(cfg) if ENV.root else ["ต้องใช้รูท"]):
-                say(ln, "dim")
-            pause()
-        elif c == "9":
-            if not ENV.root:
-                say("ต้องใช้รูท", "red")
-            else:
-                for ln in tile_enable_freeform():
-                    say(ln, "dim")
-                say("ถ้ายังไม่ได้ผล ให้รีบูตเครื่องหนึ่งครั้ง แล้วเปิดแอป Roblox ใหม่", "yellow")
-            pause()
-        elif c == "7":
-            if not ENV.root:
-                say("ต้องใช้รูท", "red")
-            else:
-                sync_tile(cfg)
-                n = tile_windows(cfg)
-                say("จัดหน้าต่างแล้ว %d บาน" % n if n else
-                    "ไม่พบหน้าต่าง Roblox ที่จัดได้ (ต้องเปิดแบบ freeform: เปิดโหมดเรียงจอ (4) แล้วเปิดแอปใหม่)",
-                    "green" if n else "yellow")
-            pause()
         elif c == "2":
             v = ask("ค่าหน่วงใหม่ (0-600):")
             if v.isdigit() and 0 <= int(v) <= 600:
@@ -3501,7 +3304,6 @@ def main():
     detect_root()
     cfg = Config()
     STREAMER["on"] = bool(cfg.d["ui"]["streamer_mode"])
-    sync_tile(cfg)
     setup_logging()
     hook = Hook(cfg)
     start_update_watch(cfg, hook)
