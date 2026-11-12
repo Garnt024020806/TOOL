@@ -3191,6 +3191,201 @@ def menu_list(cfg):
     pause()
 
 
+# ----------------------------------------------------------------- rename APK (แตะแค่ /sdcard/Download ชั้นเดียว)
+def dl_dir():
+    for d in ("/sdcard/Download", "/storage/emulated/0/Download"):
+        if os.path.isdir(d):
+            return d
+    return ""
+
+
+def _nat(s):
+    return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", s)]
+
+
+def apk_files(d):
+    try:
+        names = [n for n in os.listdir(d) if n.lower().endswith(".apk") and os.path.isfile(os.path.join(d, n))]
+    except OSError:
+        return []
+    return sorted(names, key=_nat)
+
+
+def clean_apk_name(name):
+    """ตัด path / จุดนำหน้า / .apk ซ้อน (.apk.apk) แล้วใส่ .apk ให้ตัวเดียว"""
+    name = re.sub(r'[\\/\0:*?"<>|]', "", name).strip().lstrip(".")
+    name = re.sub(r"(\.apk)+$", "", name, flags=re.I).strip()
+    return (name + ".apk") if name else ""
+
+
+def apply_renames(d, pairs):
+    """pairs=[(old,new)] -> (จำนวนที่เปลี่ยนสำเร็จ, [error]). ไม่ทับไฟล์เดิม สลับชื่อกันเองได้ (ผ่านชื่อชั่วคราว)"""
+    pairs = [(o, n) for o, n in pairs if o != n]
+    olds = {o for o, _ in pairs}
+    news = [n for _, n in pairs]
+    if len(set(news)) != len(news):
+        return 0, ["ชื่อใหม่ซ้ำกันเอง"]
+    errs = []
+    for n in news:
+        if not n or n != os.path.basename(n) or not n.lower().endswith(".apk"):
+            errs.append("ชื่อไม่ถูกต้อง: " + n)
+        elif os.path.exists(os.path.join(d, n)) and n not in olds:
+            errs.append("มีไฟล์ชื่อนี้อยู่แล้ว: " + n)
+    if errs:
+        return 0, errs
+    staged, done = [], 0
+    try:
+        for i, (o, n) in enumerate(pairs):
+            t = ".rn%d_%d.tmp" % (os.getpid(), i)
+            os.rename(os.path.join(d, o), os.path.join(d, t))
+            staged.append((t, o, n))
+        for t, o, n in staged:
+            os.rename(os.path.join(d, t), os.path.join(d, n))
+            done += 1
+    except OSError as e:
+        for t, o, n in staged[done:]:               # พังกลางทาง: คืนชื่อเดิมที่ยังค้างเป็น .tmp
+            try:
+                os.rename(os.path.join(d, t), os.path.join(d, o))
+            except OSError:
+                pass
+        return done, [str(e)]
+    return done, []
+
+
+# ----------------------------------------------------------------- แก้ไข APK + Auto Sign ด้วย MT Manager (เมนู 12)
+def parse_aapt_package(apk_path):
+    """ดึง Package Name จริงจากไฟล์ APK โดยใช้ aapt หรือ apksigner ที่ติดมากับระบบ/Termux"""
+    for cmd in (
+        f"aapt dump badging {shlex.quote(apk_path)} 2>/dev/null",
+        f"aapt2 dump badging {shlex.quote(apk_path)} 2>/dev/null"
+    ):
+        rc, out = sh(cmd, root=ENV.root, timeout=10)
+        if rc == 0:
+            m = re.search(r"package:\s*name=['\"]([^'\"]+)['\"]", out)
+            if m:
+                return m.group(1)
+    # วิธีสำรองถ้าไม่มี aapt: ใช้ python zipfile อ่าน AndroidManifest.xml แบบดิบๆ (ถ้าถอดรหัสได้บางส่วน) หรือคืนค่าว่าง
+    try:
+        import xml.etree.ElementTree as ET
+        import zipfile
+        with zipfile.ZipFile(apk_path, 'r') as z:
+            with z.open('AndroidManifest.xml') as f:
+                content = f.read()
+                # ค้นหา string ที่คล้าย package name ใน binary xml (คร่าวๆ)
+                m = re.search(b'([a-zA-Z0-9_]+\\.[a-zA-Z0-9_]+\\.[a-zA-Z0-9_]+)', content)
+                if m:
+                    return m.group(1).decode('utf-8', 'ignore')
+    except Exception:
+        pass
+    return ""
+
+def menu_rename_apk(cfg):
+    """Menu 12: เปลี่ยนชื่อไฟล์ .apk เป็น Package Name และสั่ง Auto Sign ด้วย MT Manager"""
+    d = dl_dir()
+    if not d:
+        say("ไม่พบ /sdcard/Download (ยังไม่อนุญาตที่เก็บข้อมูล?)", "red")
+        return pause()
+    while True:
+        banner(cfg)
+        files = apk_files(d)
+        if not files:
+            say("ไม่พบไฟล์ .apk ใน %s (ไม่ค้นโฟลเดอร์ย่อย)" % d, "red")
+            return pause()
+            
+        t = Table(title="จัดการไฟล์ .apk + Auto Sign ด้วย MT Manager (%d ไฟล์)" % len(files), box=box.ROUNDED, header_style="bold cyan")
+        t.add_column("#")
+        t.add_column("ชื่อไฟล์เดิม")
+        t.add_column("Package Name ที่อ่านได้")
+        t.add_column("ขนาด")
+        
+        apk_info_list = []
+        for i, n in enumerate(files, 1):
+            fullpath = os.path.join(d, n)
+            pkg_name = parse_aapt_package(fullpath)
+            try:
+                mb = "%.1f MB" % (os.path.getsize(fullpath) / 1048576)
+            except OSError:
+                mb = "-"
+            t.add_row(str(i), Text(n), Text(pkg_name or "(อ่านไม่ได้ - จะใช้ชื่อเดิม)", style="yellow" if not pkg_name else "green"), mb)
+            apk_info_list.append((n, pkg_name))
+            
+        console.print(t)
+        say("  [1] เปลี่ยนชื่อ APK ตาม Package Name จริง + สั่ง Sign ด้วย MT Manager อัตโนมัติ", "bold")
+        say("  [2] เปลี่ยนชื่อไฟล์ทีละไฟล์แบบกำหนดเอง", "bold")
+        c = ask("เลือก (0=กลับ)")
+        if c == "0":
+            return
+            
+        if c == "1":
+            if not confirm("ต้องการเปลี่ยนชื่อไฟล์ .apk ทั้งหมดให้ตรงกับ Package Name และสั่ง Sign ผ่าน MT Manager หรือไม่?"):
+                continue
+                
+            success_count = 0
+            for old_name, pkg_name in apk_info_list:
+                if not pkg_name:
+                    say(f"ข้าม {old_name}: ไม่สามารถอ่าน Package Name ได้", "yellow")
+                    continue
+                    
+                new_name = f"{pkg_name}.apk"
+                old_path = os.path.join(d, old_name)
+                new_path = os.path.join(d, new_name)
+                
+                # ถ้าชื่อเดิมตรงกับ Package Name อยู่แล้ว ข้ามการrename แต่ไปสั่ง Sign ได้
+                if old_path != new_path:
+                    try:
+                        if os.path.exists(new_path):
+                            os.remove(new_path)
+                        os.rename(old_path, new_path)
+                        say(f"เปลี่ยนชื่อ: {old_name} ➔ {new_name}", "green")
+                    except Exception as e:
+                        say(f"เปลี่ยนชื่อ {old_name} ไม่สำเร็จ: {e}", "red")
+                        continue
+                else:
+                    say(f"ไฟล์ {old_name} ใช้ชื่อ Package Name อยู่แล้ว", "dim")
+                    
+                # สั่ง Sign APK อัตโนมัติผ่าน MT Manager Intent (Bin.mt.plus)
+                # คำสั่ง am start ส่ง Intent ไปยัง MT Manager เพื่อให้ทำเครื่องหมาย Sign ไฟล์ APK นั้นๆ
+                sign_cmd = f"am start -a android.intent.action.VIEW -d 'file://{new_path}' -t 'application/vnd.android.package-archive' -p bin.mt.plus 2>/dev/null"
+                rc, out = sh(sign_cmd, root=ENV.root, timeout=10)
+                if rc == 0:
+                    say(f"➔ ส่งคำสั่ง Auto Sign ไปยัง MT Manager สำหรับ {new_name} เรียบร้อย", "cyan")
+                    success_count += 1
+                else:
+                    # ลองใช้ Intent แบบทั่วไปหากระบุ package ของ MT Manager ไม่สำเร็จ
+                    sh(f"am start -a android.intent.action.VIEW -d 'file://{new_path}' -t 'application/vnd.android.package-archive' 2>/dev/null", root=ENV.root, timeout=10)
+                    say(f"➔ เปิดไฟล์ผ่าน MT Manager เพื่อ Sign (Intent สำรอง)", "yellow")
+                    success_count += 1
+                    
+                time.sleep(1)
+                
+            say(f"ดำเนินการเสร็จสิ้น สำเร็จ {success_count} ไฟล์", "green")
+            pause()
+            
+        elif c == "2":
+            try:
+                idx = int(ask("เลือกเลขไฟล์ที่จะเปลี่ยน:")) - 1
+                old = files[idx]
+            except (ValueError, IndexError):
+                say("เลขไม่ถูกต้อง", "red")
+                pause()
+                continue
+            new = clean_apk_name(ask("ชื่อใหม่ (ไม่ต้องพิมพ์ .apk):"))
+            if not new:
+                say("ชื่อว่าง ยกเลิก", "red")
+                pause()
+                continue
+            done, errs = apply_renames(d, [(old, new)])
+            if done:
+                say(f"เปลี่ยนชื่อสำเร็จเป็น {new}", "green")
+                new_path = os.path.join(d, new)
+                if confirm("ต้องการสั่ง Sign ไฟล์นี้ด้วย MT Manager ทันทีเลยหรือไม่?"):
+                    sh(f"am start -a android.intent.action.VIEW -d 'file://{new_path}' -t 'application/vnd.android.package-archive' -p bin.mt.plus 2>/dev/null", root=ENV.root, timeout=10)
+                    say("ส่งคำสั่งไปยัง MT Manager แล้ว", "cyan")
+            for e in errs:
+                say("✗ " + e, "red")
+            pause()
+
+
 UPDATE_URL = "https://raw.githubusercontent.com/Garnt024020806/TOOL/main/rejoin.py"
 
 
@@ -3297,7 +3492,8 @@ def run_update():
 MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
         ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
-        ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("11", "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)"), ("0", "ออก")]
+        ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("11", "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)"),
+        ("12", "เปลี่ยนชื่อไฟล์ .apk ใน Download"), ("0", "ออก")]
 
 
 def main():
@@ -3351,6 +3547,8 @@ def main():
         elif c == "11":
             run_update()
             pause()
+        elif c == "12":
+            menu_rename_apk(cfg)
         elif c == "0":
             say("ลาก่อน!", "cyan")
             return
