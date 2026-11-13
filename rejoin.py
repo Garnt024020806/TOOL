@@ -47,7 +47,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.9"
+VERSION = "1.10"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
 KNOWN_EXEC_DIRS = ("/storage/emulated/0/Delta/Autoexecute", ARCEUS_AUTOEXEC)
@@ -3829,11 +3829,256 @@ def run_update():
     return "updated"
 
 
+# ----------------------------------------------------------------- เทสเครื่อง (Cloud Phone): CPU / RAM / GPU
+def _sysread(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except Exception:
+        pass
+    if ENV.root:
+        rc, out = sh("cat " + shlex.quote(path), root=True, timeout=5)
+        if rc == 0 and out.strip():
+            return out.strip()
+    return None
+
+
+def _prop(name):
+    rc, out = sh("getprop " + name, timeout=5)
+    return out.strip() if rc == 0 else ""
+
+
+def _cpu_work(sec):
+    """Worker (module-level so multiprocessing can pickle it): SHA-256 hashes/second for `sec` seconds."""
+    import hashlib
+    h, n = b"garnt" * 12, 0
+    end = time.perf_counter() + sec
+    while time.perf_counter() < end:
+        for _ in range(500):
+            h = hashlib.sha256(h).digest()
+        n += 500
+    return n
+
+
+def _cpu_model():
+    try:
+        with open("/proc/cpuinfo") as f:
+            txt = f.read()
+        for key in ("Hardware", "model name", "Processor"):
+            m = re.search(r"^%s\s*:\s*(.+)$" % key, txt, re.M)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+    except Exception:
+        pass
+    return _prop("ro.soc.model") or _prop("ro.board.platform") or "?"
+
+
+def _fmt_mhz(khz):
+    return "%d MHz" % (int(khz) // 1000) if khz and khz.isdigit() else "?"
+
+
+def bench_cpu(secs=4):
+    import platform
+    from multiprocessing import Pool
+    cores = os.cpu_count() or 1
+    rows = [("รุ่น CPU", _cpu_model()), ("สถาปัตยกรรม", platform.machine() or "?"), ("จำนวนคอร์", str(cores))]
+    base = "/sys/devices/system/cpu/cpu0/cpufreq/"
+    rows.append((("ความเร็ว (ตอนนี้ / สูงสุด)"),
+                 "%s / %s" % (_fmt_mhz(_sysread(base + "scaling_cur_freq")), _fmt_mhz(_sysread(base + "cpuinfo_max_freq")))))
+    say("กำลังทดสอบ CPU 1 คอร์ (%d วินาที) ..." % secs, "dim")
+    t0 = time.perf_counter()
+    n1 = _cpu_work(secs)
+    single = n1 / (time.perf_counter() - t0)
+    rows.append(("คะแนน 1 คอร์", "%.0f k hash/s" % (single / 1000)))
+    multi, usage = None, None
+    if cores > 1:
+        say("กำลังทดสอบ CPU ทุกคอร์ (%d คอร์ x %d วินาที) ..." % (cores, secs), "dim")
+        try:
+            t0 = time.perf_counter()
+            with Pool(cores) as p:
+                res = p.map_async(_cpu_work, [secs] * cores)
+                time.sleep(max(1.0, secs / 2.0))
+                try:
+                    usage = CPU.read(wait=1.0)["now"]
+                except Exception:
+                    usage = None
+                total = sum(res.get(timeout=secs + 60))
+            multi = total / (time.perf_counter() - t0)
+        except Exception as e:
+            rows.append(("ทดสอบหลายคอร์", "ไม่สำเร็จ: %s" % e))
+    if multi:
+        rows.append(("คะแนนทุกคอร์", "%.0f k hash/s" % (multi / 1000)))
+        rows.append(("ประสิทธิภาพเพิ่มขึ้น", "x%.2f จาก %d คอร์ (เต็ม = x%d)" % (multi / single, cores, cores)))
+        if usage is not None:
+            rows.append(("CPU ใช้งานระหว่างเทส", "%.0f%%" % usage))
+        if multi / single < cores * 0.6:
+            rows.append(("หมายเหตุ", "ได้ไม่ถึง 60% ของคอร์ที่มี: อาจโดนจำกัด CPU / แชร์เครื่องกับคนอื่น / มีแอปอื่นกินอยู่"))
+    return rows
+
+
+def bench_ram(max_mb=64):
+    rows, info = [], {}
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                info[k] = int(v.split()[0]) // 1024
+    except Exception:
+        pass
+    total, avail = info.get("MemTotal"), mem_available_mb()
+    rows.append(("RAM ทั้งหมด", "%s MB" % total if total else "?"))
+    rows.append(("RAM ว่าง", "%s MB" % avail if avail is not None else "?"))
+    if total and avail is not None:
+        rows.append(("ใช้ไปแล้ว", "%d MB (%.0f%%)" % (total - avail, 100.0 * (total - avail) / total)))
+    if info.get("SwapTotal"):
+        rows.append(("Swap (ใช้/ทั้งหมด)", "%d / %d MB" % (info["SwapTotal"] - info.get("SwapFree", 0), info["SwapTotal"])))
+    size_mb = max(8, min(max_mb, int((avail or 256) * 0.15)))
+    size = size_mb * 1024 * 1024
+    try:
+        say("กำลังทดสอบความเร็วแรม (บล็อก %d MB) ..." % size_mb, "dim")
+        t0 = time.perf_counter()
+        a = bytearray(size)
+        for i in range(0, size, 4096):          # เขียนทุกหน้าแรมให้จองจริง
+            a[i] = 1
+        alloc = size_mb / max(1e-6, time.perf_counter() - t0)
+        pat = bytes(range(256)) * (size // 256)
+        t0 = time.perf_counter()
+        a[:] = pat
+        write = size_mb / max(1e-6, time.perf_counter() - t0)
+        b, rounds = bytearray(size), 0
+        t0 = time.perf_counter()
+        while time.perf_counter() - t0 < 3:
+            b[:] = a
+            rounds += 1
+        copy = size_mb * rounds / max(1e-6, time.perf_counter() - t0)
+        ok = bytes(b) == pat
+        rows += [("จองแรม + แตะทุกหน้า", "%.0f MB/s" % alloc), ("เขียน", "%.0f MB/s" % write),
+                 ("คัดลอก", "%.0f MB/s" % copy), ("ตรวจความถูกต้องของข้อมูล", "ผ่าน" if ok else "ไม่ผ่าน ⚠ แรมอาจมีปัญหา")]
+        del a, b, pat
+    except MemoryError:
+        rows.append(("ทดสอบความเร็ว", "จองแรมไม่ได้ (MemoryError)"))
+    except Exception as e:
+        rows.append(("ทดสอบความเร็ว", "ไม่สำเร็จ: %s" % e))
+    return rows
+
+
+def _gpu_load_paths():
+    import glob
+    paths = ["/sys/class/kgsl/kgsl-3d0/gpubusy", "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
+             "/sys/kernel/gpu/gpu_busy", "/sys/class/misc/mali0/device/utilization",
+             "/sys/devices/platform/mali/utilization"]
+    for d in glob.glob("/sys/class/devfreq/*"):
+        if re.search(r"gpu|kgsl|mali|g3d", os.path.basename(d), re.I):
+            paths.append(d + "/load")
+    return paths
+
+
+def _parse_load(s):
+    n = re.findall(r"\d+", s or "")
+    if len(n) >= 2 and int(n[1]) > 0:
+        return min(100.0, 100.0 * int(n[0]) / int(n[1]))
+    if len(n) == 1:
+        return float(n[0])
+    return None
+
+
+def bench_gpu():
+    rows = []
+    gles = ""
+    for root in (False, True):
+        if root and not ENV.root:
+            break
+        rc, out = sh("dumpsys SurfaceFlinger | grep -i -m1 'GLES'", root=root, timeout=15)
+        if rc == 0 and out.strip():
+            gles = out.strip()
+            break
+    if gles:
+        rows.append(("GPU / OpenGL ES", gles[:110]))
+    else:
+        rows.append(("GPU / OpenGL ES", "อ่านไม่ได้ (dumpsys SurfaceFlinger ต้องใช้สิทธิ์ ลองโหมดรูท)"))
+    ver = _prop("ro.opengles.version")
+    if ver.isdigit():
+        v = int(ver)
+        rows.append(("OpenGL ES ที่รองรับ", "%d.%d" % (v >> 16, v & 0xFFFF)))
+    for label, key in (("ไดรเวอร์ EGL", "ro.hardware.egl"), ("Vulkan", "ro.hardware.vulkan"),
+                       ("แพลตฟอร์ม", "ro.board.platform")):
+        val = _prop(key)
+        if val:
+            rows.append((label, val))
+    soft = re.search(r"swiftshader|llvmpipe|softpipe|software|angle", " ".join([gles, _prop("ro.hardware.egl")]), re.I)
+    if soft:
+        rows.append(("⚠ คำเตือน", "ดูเหมือนเป็นซอฟต์แวร์เรนเดอร์ (ไม่มี GPU จริง) กราฟิกจะกิน CPU และช้ากว่ามาก"))
+    path, load = None, None
+    for p in _gpu_load_paths():
+        s = _sysread(p)
+        if s and _parse_load(s) is not None:
+            path = p
+            break
+    if path:
+        say("กำลังวัดโหลด GPU 5 วินาที ...", "dim")
+        vals = []
+        for _ in range(5):
+            time.sleep(1)
+            v = _parse_load(_sysread(path))
+            if v is not None:
+                vals.append(v)
+        if vals:
+            rows.append(("โหลด GPU (เฉลี่ย / สูงสุด)", "%.0f%% / %.0f%%" % (sum(vals) / len(vals), max(vals))))
+    else:
+        rows.append(("โหลด GPU", "อ่านไม่ได้ (เครื่องนี้ไม่เปิด sysfs ของ GPU ให้อ่าน)"))
+    for p in ("/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq", "/sys/class/kgsl/kgsl-3d0/gpuclk"):
+        s = _sysread(p)
+        if s and s.isdigit():
+            rows.append(("ความเร็ว GPU", "%d MHz" % (int(s) // 1000000 if int(s) > 100000 else int(s))))
+            break
+    rows.append(("หมายเหตุ", "Termux สร้างงานกราฟิกจริงไม่ได้ จึงวัดได้แค่ข้อมูล + โหลด; วัดคะแนนจริงใช้ GFXBench / 3DMark"))
+    return rows
+
+
+def _show_bench(title, rows):
+    t = Table(title=title, box=box.ROUNDED, header_style="bold cyan", show_lines=False)
+    t.add_column("รายการ", style="bold")
+    t.add_column("ผล", overflow="fold")
+    for k, v in rows:
+        t.add_row(k, v)
+    console.print(t)
+    log.info("bench %s: %s", title, "; ".join("%s=%s" % r for r in rows))
+
+
+def menu_bench(cfg):
+    tests = {"1": ("ทดสอบ CPU", bench_cpu), "2": ("ทดสอบ RAM", bench_ram), "3": ("ทดสอบ GPU", bench_gpu)}
+    while True:
+        banner(cfg)
+        t = Table(title="เทสเครื่อง Cloud Phone", box=box.ROUNDED, header_style="bold cyan")
+        t.add_column("#")
+        t.add_column("รายการ")
+        t.add_row("1", "CPU — ข้อมูลคอร์ + คะแนน 1 คอร์ / ทุกคอร์")
+        t.add_row("2", "RAM — ความจุ + ความเร็วเขียน/คัดลอก + ตรวจความถูกต้อง")
+        t.add_row("3", "GPU — รุ่น/ไดรเวอร์ + โหลด (ถ้าอ่านได้)")
+        t.add_row("4", "ทดสอบทั้งหมด (ใช้เวลาราว 30 วินาที)")
+        console.print(t)
+        say("แนะนำ: หยุดรีจอย/ปิดเกมก่อนเทส เพื่อให้ผลไม่เพี้ยน", "dim")
+        c = ask("เลือกหมายเลข (0=กลับ)")
+        if c == "0":
+            return
+        picks = list(tests) if c == "4" else ([c] if c in tests else [])
+        if not picks:
+            continue
+        try:
+            for k in picks:
+                name, fn = tests[k]
+                _show_bench(name, fn())
+        except KeyboardInterrupt:
+            say("ยกเลิกการทดสอบ", "yellow")
+        pause()
+
+
 MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
         ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
         ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("11", "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)"),
-        ("12", "จัดการ .apk: เปลี่ยนชื่อ / เปลี่ยน Package / Clone + Sign"), ("0", "ออก")]
+        ("12", "จัดการ .apk: เปลี่ยนชื่อ / เปลี่ยน Package / Clone + Sign"),
+        ("13", "เทสเครื่อง Cloud Phone (CPU / RAM / GPU)"), ("0", "ออก")]
 
 
 def main():
@@ -3889,6 +4134,8 @@ def main():
             pause()
         elif c == "12":
             menu_rename_apk(cfg)
+        elif c == "13":
+            menu_bench(cfg)
         elif c == "0":
             say("ลาก่อน!", "cyan")
             return
