@@ -3252,35 +3252,338 @@ def apply_renames(d, pairs):
     return done, []
 
 
-# ----------------------------------------------------------------- แก้ไข APK + Auto Sign ด้วย MT Manager (เมนู 12)
+# ----------------------------------------------------------------- แก้ไข APK + Sign + Clone (เมนู 12)
+def _rd_v8(b, p):
+    n = b[p]
+    if n & 0x80:
+        return ((n & 0x7F) << 8) | b[p + 1], p + 2
+    return n, p + 1
+
+
+class _Pool:
+    """String pool ของ binary XML (AndroidManifest.xml): อ่านค่า, เพิ่ม string ท้ายตาราง (index เดิมไม่ขยับ), แพ็กกลับ"""
+
+    def __init__(self, buf, off):
+        t, hs, size = struct.unpack_from("<HHI", buf, off)
+        if t != 0x0001:
+            raise ValueError("string pool not found")
+        sc, stc, flags, ss, _ys = struct.unpack_from("<5I", buf, off + 8)
+        if stc:
+            raise ValueError("string pool has styles")
+        self.utf8, self.flags, self.end = bool(flags & 0x100), flags, off + size
+        offs = struct.unpack_from("<%dI" % sc, buf, off + hs)
+        self.raw, self.text, self.index = [], [], {}
+        for o in offs:
+            p0 = off + ss + o
+            if self.utf8:
+                _, p = _rd_v8(buf, p0)
+                n, p = _rd_v8(buf, p)
+                txt, e = bytes(buf[p:p + n]).decode("utf-8", "replace"), p + n + 1
+            else:
+                n, p = struct.unpack_from("<H", buf, p0)[0], p0 + 2
+                if n & 0x8000:
+                    n, p = ((n & 0x7FFF) << 16) | struct.unpack_from("<H", buf, p)[0], p + 2
+                txt, e = bytes(buf[p:p + 2 * n]).decode("utf-16-le", "replace"), p + 2 * n + 2
+            self.raw.append(bytes(buf[p0:e]))
+            self.text.append(txt)
+            self.index.setdefault(txt, len(self.text) - 1)
+
+    def add(self, s):
+        if s in self.index:
+            return self.index[s]
+        if self.utf8:
+            b = s.encode("utf-8")
+            v = lambda n: bytes([n]) if n < 0x80 else bytes([0x80 | (n >> 8), n & 0xFF])
+            raw = v(len(s.encode("utf-16-le")) // 2) + v(len(b)) + b + b"\0"
+        else:
+            u = s.encode("utf-16-le")
+            n = len(u) // 2
+            head = struct.pack("<H", n) if n < 0x8000 else struct.pack("<HH", 0x8000 | (n >> 16), n & 0xFFFF)
+            raw = head + u + b"\0\0"
+        self.raw.append(raw)
+        self.text.append(s)
+        self.index[s] = len(self.text) - 1
+        return self.index[s]
+
+    def pack(self):
+        sc, offs, data, cur = len(self.raw), [], bytearray(), 0
+        for r in self.raw:
+            offs.append(cur)
+            data += r
+            cur += len(r)
+        while len(data) % 4:
+            data += b"\0"
+        ss = 28 + 4 * sc
+        return (struct.pack("<HHI5I", 1, 28, ss + len(data), sc, 0, self.flags, ss, 0)
+                + struct.pack("<%dI" % sc, *offs) + bytes(data))
+
+
+def _axml_split(buf):
+    t, hs, _ = struct.unpack_from("<HHI", buf, 0)
+    if t != 0x0003:
+        raise ValueError("not a binary AndroidManifest.xml")
+    pool = _Pool(buf, hs)
+    return pool, bytearray(buf[pool.end:])
+
+
+def _axml_tags(pool, rest):
+    pos = 0
+    while pos + 8 <= len(rest):
+        t, _hs, sz = struct.unpack_from("<HHI", rest, pos)
+        if sz < 8:
+            break
+        if t == 0x0102:
+            _ns, name, a0, asz, ac = struct.unpack_from("<iiHHH", rest, pos + 16)
+            tag = pool.text[name] if 0 <= name < len(pool.text) else ""
+            attrs = []
+            for i in range(ac):
+                ap = pos + 16 + a0 + i * asz
+                _ans, an, _raw, _s, _r, dt, data = struct.unpack_from("<iiiHBBI", rest, ap)
+                aname = pool.text[an] if 0 <= an < len(pool.text) else ""
+                val = pool.text[data] if dt == 3 and data < len(pool.text) else None
+                attrs.append((ap, aname, val))
+            yield tag, attrs
+        pos += sz
+
+
+def axml_get_package(buf):
+    pool, rest = _axml_split(buf)
+    for tag, attrs in _axml_tags(pool, rest):
+        if tag == "manifest":
+            for _ap, an, val in attrs:
+                if an == "package" and val:
+                    return val
+    return ""
+
+
+_CLS_TAGS = {"application", "activity", "activity-alias", "service", "receiver", "provider", "instrumentation"}
+_CLS_ATTRS = {"name", "targetActivity", "parentActivityName", "backupAgent", "manageSpaceActivity"}
+_PERM_TAGS = {"permission", "uses-permission", "uses-permission-sdk-23", "permission-group", "permission-tree"}
+
+
+def axml_patch_package(buf, old, new):
+    """เปลี่ยน package ใน manifest: package=, authorities, ชื่อ permission ของตัวเอง, process/taskAffinity
+    และแปลงชื่อคลาสแบบสัมพัทธ์ (.Foo) เป็นชื่อเต็มของ package เดิม ไม่งั้นแอปหาคลาสไม่เจอหลังเปลี่ยนชื่อ"""
+    pool, rest = _axml_split(buf)
+    changed = 0
+    for tag, attrs in list(_axml_tags(pool, rest)):
+        for ap, an, val in attrs:
+            if not val:
+                continue
+            nv = None
+            if tag == "manifest" and an == "package":
+                nv = new if val == old else None
+            elif tag == "provider" and an == "authorities":
+                nv = val.replace(old, new) if old in val else None
+            elif tag in _PERM_TAGS and an == "name":
+                nv = new + val[len(old):] if val.startswith(old + ".") else None
+            elif an in ("process", "taskAffinity"):
+                nv = new + val[len(old):] if val == old or val.startswith(old + ".") else None
+            elif tag in _CLS_TAGS and an in _CLS_ATTRS:
+                if val.startswith("."):
+                    nv = old + val
+                elif "." not in val and not val.startswith(":"):
+                    nv = old + "." + val
+            if nv is not None and nv != val:
+                idx = pool.add(nv)
+                struct.pack_into("<i", rest, ap + 8, idx)
+                struct.pack_into("<I", rest, ap + 16, idx)
+                changed += 1
+    out = bytearray(buf[:8]) + pool.pack() + rest
+    struct.pack_into("<I", out, 4, len(out))
+    return bytes(out), changed
+
+
+def arsc_patch_package(buf, old, new):
+    """แก้ชื่อ package ในตาราง resources.arsc (ช่องชื่อกว้างคงที่ 128 ตัวอักษร) ให้ getIdentifier() ยังหาเจอ"""
+    buf, n = bytearray(buf), 0
+    if len(buf) < 12 or struct.unpack_from("<H", buf, 0)[0] != 0x0002:
+        return bytes(buf), 0
+    pos = struct.unpack_from("<H", buf, 2)[0]
+    while pos + 8 <= len(buf):
+        ct, _chs, csz = struct.unpack_from("<HHI", buf, pos)
+        if csz < 8:
+            break
+        if ct == 0x0200:
+            name = bytes(buf[pos + 12:pos + 268]).decode("utf-16-le", "replace").split("\0")[0]
+            if name == old:
+                nb = new.encode("utf-16-le")
+                buf[pos + 12:pos + 268] = nb + b"\0" * (256 - len(nb))
+                n += 1
+        pos += csz
+    return bytes(buf), n
+
+
+_PKG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
+_SIG_RE = re.compile(r"^META-INF/[^/]+\.(SF|RSA|DSA|EC)$|^META-INF/MANIFEST\.MF$", re.I)
+
+
+def build_apk_variant(src, dst, old, new):
+    """สร้าง APK ใหม่ที่ package = new (ลายเซ็นเดิมถูกตัดทิ้ง ต้อง Sign ใหม่) พร้อม align ตามที่ Android ต้องการ"""
+    import zipfile
+    tmp = dst + ".tmp"
+    with zipfile.ZipFile(src) as zin:
+        names = set(zin.namelist())
+        if "AndroidManifest.xml" not in names:
+            raise ValueError("ไม่มี AndroidManifest.xml")
+        man, cnt = axml_patch_package(zin.read("AndroidManifest.xml"), old, new)
+        if not cnt:
+            raise ValueError("แก้ manifest ไม่สำเร็จ (package ไม่ตรง %s)" % old)
+        arsc = arsc_patch_package(zin.read("resources.arsc"), old, new)[0] if "resources.arsc" in names else None
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zout:
+                for info in zin.infolist():
+                    nm = info.filename
+                    if _SIG_RE.match(nm):
+                        continue
+                    zi = zipfile.ZipInfo(nm, info.date_time)
+                    zi.external_attr = info.external_attr
+                    zi.compress_type = zipfile.ZIP_STORED if (nm == "resources.arsc" or info.is_dir()) else info.compress_type
+                    if zi.compress_type == zipfile.ZIP_STORED and not info.is_dir():
+                        al = 16384 if nm.endswith(".so") else 4
+                        pad = (-(zout.fp.tell() + 30 + len(nm.encode("utf-8")))) % al
+                        if pad:
+                            zi.extra = (struct.pack("<HH", 0xD935, pad - 4) + b"\0" * (pad - 4)) if pad >= 4 else b"\0" * pad
+                    if nm == "AndroidManifest.xml":
+                        zout.writestr(zi, man)
+                    elif nm == "resources.arsc" and arsc is not None:
+                        zout.writestr(zi, arsc)
+                    elif info.is_dir():
+                        zout.writestr(zi, b"")
+                    else:
+                        with zin.open(info) as s, zout.open(zi, "w", force_zip64=info.file_size > 0x7FFFFFFF) as d:
+                            shutil.copyfileobj(s, d, 1 << 20)
+            os.replace(tmp, dst)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+
+KS_PASS = "garnt123"
+
+
+def signer_ready():
+    return bool(shutil.which("apksigner") and shutil.which("keytool"))
+
+
+def ensure_signer():
+    if signer_ready():
+        return True
+    if not shutil.which("pkg"):
+        return False
+    say("ยังไม่มี apksigner/keytool (ใช้เซ็น APK)", "yellow")
+    if not confirm("ติดตั้งอัตโนมัติ (pkg install apksigner openjdk-17) ใช้เวลาสักครู่?"):
+        return False
+    rc, out = sh("pkg install -y apksigner openjdk-17", timeout=900)
+    if rc != 0:
+        say("ติดตั้งไม่สำเร็จ: " + scrub(out.strip()[-200:]), "red")
+    return signer_ready()
+
+
+def sign_apk(path):
+    """เซ็น APK ด้วย apksigner (v1+v2+v3) ใช้คีย์เดียวกันทุกตัว เก็บที่ BASE/clone.keystore -> (ok, msg)"""
+    ks = os.path.join(BASE, "clone.keystore")
+    if not os.path.isfile(ks):
+        rc, out = sh("keytool -genkeypair -keystore %s -storepass %s -keypass %s -alias clone -keyalg RSA "
+                     "-keysize 2048 -validity 10000 -dname 'CN=Clone'" % (shlex.quote(ks), KS_PASS, KS_PASS), timeout=120)
+        if rc != 0:
+            return False, "สร้าง keystore ไม่สำเร็จ: " + scrub(out.strip()[-150:])
+    rc, out = sh("apksigner sign --ks %s --ks-pass pass:%s --key-pass pass:%s --ks-key-alias clone %s"
+                 % (shlex.quote(ks), KS_PASS, KS_PASS, shlex.quote(path)), timeout=600)
+    return rc == 0, ("ok" if rc == 0 else scrub(out.strip()[-150:]))
+
+
+def open_in_mt(path):
+    """เปิดไฟล์ใน MT Manager (MT ไม่มี intent สั่งเซ็นอัตโนมัติ ต้องกดเซ็นในแอปเอง)"""
+    q = shlex.quote("file://" + path)
+    rc, _ = sh("am start -a android.intent.action.VIEW -d %s -t application/vnd.android.package-archive -p bin.mt.plus 2>/dev/null" % q,
+               root=ENV.root, timeout=10)
+    if rc != 0:
+        sh("am start -a android.intent.action.VIEW -d %s -t application/vnd.android.package-archive 2>/dev/null" % q,
+           root=ENV.root, timeout=10)
+    return rc == 0
+
+
+def sign_outputs(paths):
+    """เซ็นไฟล์ที่สร้างใหม่: apksigner อัตโนมัติ ถ้าใช้ไม่ได้ให้เปิด MT Manager ทีละไฟล์"""
+    if not paths:
+        return
+    if ensure_signer():
+        for p in paths:
+            ok, msg = sign_apk(p)
+            say("%s Sign %s %s" % ("✓" if ok else "✗", os.path.basename(p), "" if ok else msg), "green" if ok else "red")
+        return
+    say("ไม่มี apksigner -> เปิดใน MT Manager ให้เซ็นเอง (แตะไฟล์ > Sign/เซ็น > ใช้ลายเซ็นทดสอบ)", "yellow")
+    for p in paths:
+        open_in_mt(p)
+        say("เปิด %s ใน MT Manager" % os.path.basename(p), "cyan")
+        if len(paths) > 1:
+            ask("เซ็นเสร็จแล้วกด Enter เพื่อเปิดไฟล์ถัดไป")
+
+
 def parse_aapt_package(apk_path):
-    """ดึง Package Name จริงจากไฟล์ APK โดยใช้ aapt หรือ apksigner ที่ติดมากับระบบ/Termux"""
-    for cmd in (
-        f"aapt dump badging {shlex.quote(apk_path)} 2>/dev/null",
-        f"aapt2 dump badging {shlex.quote(apk_path)} 2>/dev/null"
-    ):
+    """ดึง Package Name จาก APK: อ่าน manifest เองก่อน ถ้าไม่ได้ค่อยใช้ aapt"""
+    try:
+        import zipfile
+        with zipfile.ZipFile(apk_path) as z:
+            p = axml_get_package(z.read("AndroidManifest.xml"))
+            if p:
+                return p
+    except Exception:
+        pass
+    for cmd in (f"aapt dump badging {shlex.quote(apk_path)} 2>/dev/null",
+                f"aapt2 dump badging {shlex.quote(apk_path)} 2>/dev/null"):
         rc, out = sh(cmd, root=ENV.root, timeout=10)
         if rc == 0:
             m = re.search(r"package:\s*name=['\"]([^'\"]+)['\"]", out)
             if m:
                 return m.group(1)
-    # วิธีสำรองถ้าไม่มี aapt: ใช้ python zipfile อ่าน AndroidManifest.xml แบบดิบๆ (ถ้าถอดรหัสได้บางส่วน) หรือคืนค่าว่าง
-    try:
-        import xml.etree.ElementTree as ET
-        import zipfile
-        with zipfile.ZipFile(apk_path, 'r') as z:
-            with z.open('AndroidManifest.xml') as f:
-                content = f.read()
-                # ค้นหา string ที่คล้าย package name ใน binary xml (คร่าวๆ)
-                m = re.search(b'([a-zA-Z0-9_]+\\.[a-zA-Z0-9_]+\\.[a-zA-Z0-9_]+)', content)
-                if m:
-                    return m.group(1).decode('utf-8', 'ignore')
-    except Exception:
-        pass
     return ""
 
+
+def _alpha_suffix(n):                      # 1->a 2->b ... 26->z 27->aa
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(97 + r) + s
+    return s
+
+
+def clone_names(base, count, style):
+    """style 'abc' -> base+a, base+b, ... | '123' -> base+1, base+2, ..."""
+    return [base + (_alpha_suffix(i) if style == "abc" else str(i)) for i in range(1, count + 1)]
+
+
+def _pick_apk(files, d):
+    try:
+        i = int(ask("เลือกเลขไฟล์ APK:")) - 1
+        if i < 0:
+            raise IndexError
+        return files[i]
+    except (ValueError, IndexError):
+        say("เลขไม่ถูกต้อง", "red")
+        return None
+
+
+def _build_many(d, src_name, old, targets):
+    src = os.path.join(d, src_name)
+    made = []
+    for i, new in enumerate(targets, 1):
+        dst = os.path.join(d, new + ".apk")
+        say("[%d/%d] สร้าง %s ..." % (i, len(targets), new), "dim")
+        try:
+            build_apk_variant(src, dst, old, new)
+            made.append(dst)
+        except Exception as e:
+            say("✗ %s: %s" % (new, scrub(e)), "red")
+    return made
+
+
 def menu_rename_apk(cfg):
-    """Menu 12: เปลี่ยนชื่อไฟล์ .apk เป็น Package Name และสั่ง Auto Sign ด้วย MT Manager"""
+    """Menu 12: จัดการ .apk ใน Download — เปลี่ยนชื่อไฟล์ / เปลี่ยน Package จริง / Clone หลายตัว + Sign"""
     d = dl_dir()
     if not d:
         say("ไม่พบ /sdcard/Download (ยังไม่อนุญาตที่เก็บข้อมูล?)", "red")
@@ -3291,13 +3594,12 @@ def menu_rename_apk(cfg):
         if not files:
             say("ไม่พบไฟล์ .apk ใน %s (ไม่ค้นโฟลเดอร์ย่อย)" % d, "red")
             return pause()
-            
-        t = Table(title="จัดการไฟล์ .apk + Auto Sign ด้วย MT Manager (%d ไฟล์)" % len(files), box=box.ROUNDED, header_style="bold cyan")
+
+        t = Table(title="จัดการไฟล์ .apk (%d ไฟล์)" % len(files), box=box.ROUNDED, header_style="bold cyan")
         t.add_column("#")
-        t.add_column("ชื่อไฟล์เดิม")
+        t.add_column("ชื่อไฟล์")
         t.add_column("Package Name ที่อ่านได้")
         t.add_column("ขนาด")
-        
         apk_info_list = []
         for i, n in enumerate(files, 1):
             fullpath = os.path.join(d, n)
@@ -3306,31 +3608,27 @@ def menu_rename_apk(cfg):
                 mb = "%.1f MB" % (os.path.getsize(fullpath) / 1048576)
             except OSError:
                 mb = "-"
-            t.add_row(str(i), Text(n), Text(pkg_name or "(อ่านไม่ได้ - จะใช้ชื่อเดิม)", style="yellow" if not pkg_name else "green"), mb)
+            t.add_row(str(i), Text(n), Text(pkg_name or "(อ่านไม่ได้)", style="yellow" if not pkg_name else "green"), mb)
             apk_info_list.append((n, pkg_name))
-            
         console.print(t)
-        say("  [1] เปลี่ยนชื่อ APK ตาม Package Name จริง + สั่ง Sign ด้วย MT Manager อัตโนมัติ", "bold")
+        say("  [1] เปลี่ยนชื่อไฟล์ทั้งหมดตาม Package Name + เปิด MT Manager", "bold")
         say("  [2] เปลี่ยนชื่อไฟล์ทีละไฟล์แบบกำหนดเอง", "bold")
+        say("  [3] เปลี่ยน Package Name จริงในตัว APK (rename package) + Sign", "bold")
+        say("  [4] Clone หลายตัว: กำหนดจำนวน + ต่อท้าย ABC หรือ 123 + Sign", "bold")
         c = ask("เลือก (0=กลับ)")
         if c == "0":
             return
-            
+
         if c == "1":
-            if not confirm("ต้องการเปลี่ยนชื่อไฟล์ .apk ทั้งหมดให้ตรงกับ Package Name และสั่ง Sign ผ่าน MT Manager หรือไม่?"):
+            if not confirm("เปลี่ยนชื่อไฟล์ .apk ทั้งหมดให้ตรงกับ Package Name และเปิดใน MT Manager หรือไม่?"):
                 continue
-                
             success_count = 0
             for old_name, pkg_name in apk_info_list:
                 if not pkg_name:
                     say(f"ข้าม {old_name}: ไม่สามารถอ่าน Package Name ได้", "yellow")
                     continue
-                    
                 new_name = f"{pkg_name}.apk"
-                old_path = os.path.join(d, old_name)
-                new_path = os.path.join(d, new_name)
-                
-                # ถ้าชื่อเดิมตรงกับ Package Name อยู่แล้ว ข้ามการrename แต่ไปสั่ง Sign ได้
+                old_path, new_path = os.path.join(d, old_name), os.path.join(d, new_name)
                 if old_path != new_path:
                     try:
                         if os.path.exists(new_path):
@@ -3342,31 +3640,16 @@ def menu_rename_apk(cfg):
                         continue
                 else:
                     say(f"ไฟล์ {old_name} ใช้ชื่อ Package Name อยู่แล้ว", "dim")
-                    
-                # สั่ง Sign APK อัตโนมัติผ่าน MT Manager Intent (Bin.mt.plus)
-                # คำสั่ง am start ส่ง Intent ไปยัง MT Manager เพื่อให้ทำเครื่องหมาย Sign ไฟล์ APK นั้นๆ
-                sign_cmd = f"am start -a android.intent.action.VIEW -d 'file://{new_path}' -t 'application/vnd.android.package-archive' -p bin.mt.plus 2>/dev/null"
-                rc, out = sh(sign_cmd, root=ENV.root, timeout=10)
-                if rc == 0:
-                    say(f"➔ ส่งคำสั่ง Auto Sign ไปยัง MT Manager สำหรับ {new_name} เรียบร้อย", "cyan")
-                    success_count += 1
-                else:
-                    # ลองใช้ Intent แบบทั่วไปหากระบุ package ของ MT Manager ไม่สำเร็จ
-                    sh(f"am start -a android.intent.action.VIEW -d 'file://{new_path}' -t 'application/vnd.android.package-archive' 2>/dev/null", root=ENV.root, timeout=10)
-                    say(f"➔ เปิดไฟล์ผ่าน MT Manager เพื่อ Sign (Intent สำรอง)", "yellow")
-                    success_count += 1
-                    
+                open_in_mt(new_path)
+                say(f"➔ เปิด {new_name} ใน MT Manager แล้ว", "cyan")
+                success_count += 1
                 time.sleep(1)
-                
-            say(f"ดำเนินการเสร็จสิ้น สำเร็จ {success_count} ไฟล์", "green")
+            say(f"ดำเนินการเสร็จสิ้น {success_count} ไฟล์", "green")
             pause()
-            
+
         elif c == "2":
-            try:
-                idx = int(ask("เลือกเลขไฟล์ที่จะเปลี่ยน:")) - 1
-                old = files[idx]
-            except (ValueError, IndexError):
-                say("เลขไม่ถูกต้อง", "red")
+            old = _pick_apk(files, d)
+            if not old:
                 pause()
                 continue
             new = clean_apk_name(ask("ชื่อใหม่ (ไม่ต้องพิมพ์ .apk):"))
@@ -3377,12 +3660,69 @@ def menu_rename_apk(cfg):
             done, errs = apply_renames(d, [(old, new)])
             if done:
                 say(f"เปลี่ยนชื่อสำเร็จเป็น {new}", "green")
-                new_path = os.path.join(d, new)
-                if confirm("ต้องการสั่ง Sign ไฟล์นี้ด้วย MT Manager ทันทีเลยหรือไม่?"):
-                    sh(f"am start -a android.intent.action.VIEW -d 'file://{new_path}' -t 'application/vnd.android.package-archive' -p bin.mt.plus 2>/dev/null", root=ENV.root, timeout=10)
-                    say("ส่งคำสั่งไปยัง MT Manager แล้ว", "cyan")
+                if confirm("เปิดใน MT Manager เลยหรือไม่?"):
+                    open_in_mt(os.path.join(d, new))
             for e in errs:
                 say("✗ " + e, "red")
+            pause()
+
+        elif c == "3":
+            name = _pick_apk(files, d)
+            if not name:
+                pause()
+                continue
+            old = dict(apk_info_list)[name]
+            if not old:
+                say("อ่าน Package เดิมของไฟล์นี้ไม่ได้ (ต้องเป็น APK เต็ม ไม่ใช่ split)", "red")
+                pause()
+                continue
+            new = ask("Package ใหม่ (เช่น com.roblox.clienta):").strip()
+            if not _PKG_RE.match(new) or len(new) > 127 or new == old:
+                say("ชื่อ package ไม่ถูกต้อง หรือซ้ำของเดิม", "red")
+                pause()
+                continue
+            say("ไฟล์เดิมไม่ถูกแตะ จะได้ไฟล์ใหม่ %s.apk" % new, "dim")
+            made = _build_many(d, name, old, [new])
+            sign_outputs(made)
+            say("เสร็จแล้ว: ติดตั้ง %s.apk จาก Download ได้เลย" % new if made else "ไม่สำเร็จ", "green" if made else "red")
+            pause()
+
+        elif c == "4":
+            name = _pick_apk(files, d)
+            if not name:
+                pause()
+                continue
+            old = dict(apk_info_list)[name]
+            if not old:
+                say("อ่าน Package เดิมของไฟล์นี้ไม่ได้ (ต้องเป็น APK เต็ม ไม่ใช่ split)", "red")
+                pause()
+                continue
+            base = ask("ชื่อ package ฐาน (Enter = %s):" % old).strip() or old
+            if not _PKG_RE.match(base):
+                say("ชื่อ package ไม่ถูกต้อง", "red")
+                pause()
+                continue
+            try:
+                count = int(ask("จำนวน clone (1-60):"))
+                if not 1 <= count <= 60:
+                    raise ValueError
+            except ValueError:
+                say("จำนวนไม่ถูกต้อง", "red")
+                pause()
+                continue
+            style = {"1": "abc", "2": "123"}.get(ask("ต่อท้ายด้วย  1=ABC (a,b,c..)  2=123 (1,2,3..)"))
+            if not style:
+                say("ยกเลิก", "red")
+                pause()
+                continue
+            targets = [n for n in clone_names(base, count, style) if n != old]
+            say("จะสร้าง %d ไฟล์: %s%s" % (len(targets), ", ".join(targets[:4]), " ..." if len(targets) > 4 else ""), "cyan")
+            say("แต่ละไฟล์ใหญ่เท่าต้นฉบับ (ตรวจพื้นที่ว่างก่อน) และใช้เวลาพอสมควร", "dim")
+            if not confirm("เริ่มสร้าง + Sign เลยหรือไม่?"):
+                continue
+            made = _build_many(d, name, old, targets)
+            sign_outputs(made)
+            say("เสร็จ %d/%d ไฟล์ ใน %s" % (len(made), len(targets), d), "green")
             pause()
 
 
@@ -3493,7 +3833,7 @@ MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2"
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
         ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
         ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("11", "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)"),
-        ("12", "เปลี่ยนชื่อไฟล์ .apk ใน Download"), ("0", "ออก")]
+        ("12", "จัดการ .apk: เปลี่ยนชื่อ / เปลี่ยน Package / Clone + Sign"), ("0", "ออก")]
 
 
 def main():
