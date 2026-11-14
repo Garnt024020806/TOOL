@@ -11,7 +11,6 @@ import select
 import shlex
 import shutil
 import sqlite3
-import struct
 import subprocess
 import sys
 import tempfile
@@ -47,7 +46,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "1.10"
+VERSION = "2.0"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
 KNOWN_EXEC_DIRS = ("/storage/emulated/0/Delta/Autoexecute", ARCEUS_AUTOEXEC)
@@ -92,6 +91,7 @@ BASE, STORAGE_OK = pick_base()
 CFG_PATH = os.path.join(BASE, "config.json")
 COOKIE_PATH = os.path.join(BASE, "cookie.txt")
 LOG_DIR = os.path.join(BASE, "logs")
+BACKUP_DIR = os.path.join(BASE, "backup")
 SHOT_DIR = os.path.join(BASE, "screenshots")
 TMP_DIR = TERMUX + "/usr/tmp" if os.path.isdir(TERMUX + "/usr/tmp") else tempfile.gettempdir()
 MAX_SHOTS = 20
@@ -205,6 +205,7 @@ DEFAULTS = {
                           "/storage/emulated/0/Arceus X/Autoexec"]},   # {pkg} in a path = one folder per clone
     "update": {"check": True, "hours": 6, "notified": ""},   # background version check; notified = last version already pushed to webhook
     "performance": {"low_cpu": True, "ui_refresh_sec": 2},
+    "alert": {"enabled": True, "storm_count": 5, "storm_window_min": 60, "cooldown_min": 30, "low_ram_mb": 0},   # low_ram_mb 0 = use ram.min_free_mb
     "ui": {"streamer_mode": True},   # hide account names on screen (first 4 chars + #)
     "console_webhook": {"enabled": False, "url": "", "flush_sec": 10},   # blank url = reuse the main webhook
     "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False,
@@ -214,7 +215,7 @@ DEFAULTS = {
         "enabled": False,
         "send_screenshot": True,
         "periodic_min": 10,   # status report + screenshot every N minutes (0 = off)
-        "events": {"start": True, "crash": True, "rejoin": True, "stop": True, "status": True, "update": True},
+        "events": {"start": True, "crash": True, "rejoin": True, "stop": True, "status": True, "update": True, "alert": True},
     },
 }
 
@@ -900,7 +901,7 @@ def store_cookies(cfg, found):
 
 # ----------------------------------------------------------------- discord webhook
 HOOK_RE = re.compile(r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$")
-EV_COLOR = {"status": 0xF1C40F, "start": 0x2ECC71, "crash": 0xE74C3C, "rejoin": 0x3498DB, "stop": 0x95A5A6, "test": 0x9B59B6, "update": 0xF39C12}
+EV_COLOR = {"status": 0xF1C40F, "start": 0x2ECC71, "crash": 0xE74C3C, "rejoin": 0x3498DB, "stop": 0x95A5A6, "test": 0x9B59B6, "update": 0xF39C12, "alert": 0xE67E22}
 
 
 class Hook:
@@ -1618,6 +1619,8 @@ class Inst:
         self.ok_since = None
         self.next_at = 0.0
         self.started_at = time.time()
+        self.fail_ts = deque(maxlen=50)   # timestamps of recent failures (for rejoin-storm alert)
+        self.alert_at = 0.0
 
 
 REASON = {"dead": "แอปปิด/ค้าง (ไม่พบโปรเซส)", "background": "แอปไม่ได้อยู่หน้าจอ",
@@ -1648,6 +1651,7 @@ class Engine:
         self.events = deque(maxlen=10)
         self.threads = []
         self.t0 = time.time()
+        self.last_ram_alert = 0.0
 
     # -- helpers
     def event(self, msg, style=""):
@@ -1704,6 +1708,10 @@ class Engine:
                 if due or low:
                     self.clear_ram("แรมว่างต่ำ" if low else "ตามเวลา")
                     last_ram = time.time()
+            try:
+                self._check_low_ram()
+            except Exception as e:
+                log.debug("check low ram: %s", e)
             pm = int(c["webhook"]["periodic_min"])
             if pm > 0 and now - last_rep >= pm * self.MIN:
                 last_rep = now
@@ -1711,6 +1719,52 @@ class Engine:
                     self.report(pm)
                 except Exception as e:
                     self.event("ส่งรายงานสถานะไม่สำเร็จ: %s" % e, "red")
+
+    def _alert_cfg(self):
+        a = self.cfg.d.get("alert", {})
+        return a if a.get("enabled") else None
+
+    def _cool(self):
+        try:
+            return max(1, int(self.cfg.d["alert"]["cooldown_min"])) * self.MIN
+        except (KeyError, TypeError, ValueError):
+            return 30 * self.MIN
+
+    def _check_storm(self, inst):
+        """Failures of one instance inside a time window >= limit -> one webhook alert (then cooldown)."""
+        a = self._alert_cfg()
+        now = time.time()
+        inst.fail_ts.append(now)
+        if not a:
+            return
+        try:
+            limit = min(50, max(2, int(a["storm_count"])))
+            win = max(1, int(a["storm_window_min"])) * self.MIN
+        except (KeyError, TypeError, ValueError):
+            return
+        n = sum(1 for x in inst.fail_ts if now - x <= win)
+        if n >= limit and now - inst.alert_at >= self._cool():
+            inst.alert_at = now
+            self.event("%s: หลุด/ค้าง %d ครั้งใน %d นาที (ผิดปกติ)" % (inst.label, n, win // self.MIN), "bold red")
+            self.hook.send("alert", "🚨 รีจอยถี่ผิดปกติ", inst.label,
+                           [("แพ็กเกจ", inst.pkg), ("บัญชี", inst.user or "-"),
+                            ("หลุดในช่วงเวลา", "%d ครั้ง / %d นาที" % (n, win // self.MIN))])
+
+    def _check_low_ram(self):
+        a = self._alert_cfg()
+        if not a:
+            return
+        try:
+            lim = int(a.get("low_ram_mb") or 0) or int(self.cfg.d["ram"]["min_free_mb"])
+        except (TypeError, ValueError):
+            return
+        free = mem_available_mb()
+        now = time.time()
+        if lim > 0 and free is not None and free < lim and now - self.last_ram_alert >= self._cool():
+            self.last_ram_alert = now
+            self.event("แรมว่างต่ำ %d MB (เกณฑ์ %d MB)" % (free, lim), "bold red")
+            self.hook.send("alert", "🚨 แรมว่างต่ำ", "แรมว่าง %d MB ต่ำกว่าเกณฑ์ %d MB" % (free, lim),
+                           [("แรมว่าง", "%d MB" % free), ("เกณฑ์", "%d MB" % lim)])
 
     def clear_ram(self, why):
         ok, before, after = drop_ram(self.cfg.d["ram"]["kill_cached"], self.cfg)
@@ -1951,6 +2005,7 @@ class Engine:
             inst.fails += 1
             delay = min(int(c["backoff_max"]), int(c["backoff_base"]) * 2 ** (inst.fails - 1))
             self.event("%s: %s (ครั้งที่ %d) รีจอยใน %ds" % (inst.label, REASON[reason], inst.fails, delay), "red")
+            self._check_storm(inst)
             shot = take_shot(inst.pkg) if c["auto"]["screenshot_on_crash"] else None
             self.hook.send("crash", "⚠️ หลุด/ค้าง", inst.label,
                            [("สาเหตุ", REASON[reason]), ("แพ็กเกจ", inst.pkg), ("บัญชี", inst.user or "-"),
@@ -3079,7 +3134,7 @@ def menu_perf(cfg):
 def menu_webhook(cfg, hook):
     w = cfg.d["webhook"]
     names = [("start", "เริ่มทำงาน"), ("crash", "หลุด/ค้าง"), ("rejoin", "รีจอยแล้ว"), ("stop", "หยุดทำงาน"),
-             ("status", "รายงานสถานะ+ภาพหน้าจอเป็นรอบ")]
+             ("status", "รายงานสถานะ+ภาพหน้าจอเป็นรอบ"), ("alert", "แจ้งเตือนผิดปกติ (รีจอยถี่/แรมต่ำ)")]
     n_shot = 3 + len(names)
     n_per = n_shot + 1
     n_cu, n_ce, n_cf, n_ct, n_test = n_per + 1, n_per + 2, n_per + 3, n_per + 4, n_per + 5
@@ -3191,541 +3246,6 @@ def menu_list(cfg):
     pause()
 
 
-# ----------------------------------------------------------------- rename APK (แตะแค่ /sdcard/Download ชั้นเดียว)
-def dl_dir():
-    for d in ("/sdcard/Download", "/storage/emulated/0/Download"):
-        if os.path.isdir(d):
-            return d
-    return ""
-
-
-def _nat(s):
-    return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", s)]
-
-
-def apk_files(d):
-    try:
-        names = [n for n in os.listdir(d) if n.lower().endswith(".apk") and os.path.isfile(os.path.join(d, n))]
-    except OSError:
-        return []
-    return sorted(names, key=_nat)
-
-
-def clean_apk_name(name):
-    """ตัด path / จุดนำหน้า / .apk ซ้อน (.apk.apk) แล้วใส่ .apk ให้ตัวเดียว"""
-    name = re.sub(r'[\\/\0:*?"<>|]', "", name).strip().lstrip(".")
-    name = re.sub(r"(\.apk)+$", "", name, flags=re.I).strip()
-    return (name + ".apk") if name else ""
-
-
-def apply_renames(d, pairs):
-    """pairs=[(old,new)] -> (จำนวนที่เปลี่ยนสำเร็จ, [error]). ไม่ทับไฟล์เดิม สลับชื่อกันเองได้ (ผ่านชื่อชั่วคราว)"""
-    pairs = [(o, n) for o, n in pairs if o != n]
-    olds = {o for o, _ in pairs}
-    news = [n for _, n in pairs]
-    if len(set(news)) != len(news):
-        return 0, ["ชื่อใหม่ซ้ำกันเอง"]
-    errs = []
-    for n in news:
-        if not n or n != os.path.basename(n) or not n.lower().endswith(".apk"):
-            errs.append("ชื่อไม่ถูกต้อง: " + n)
-        elif os.path.exists(os.path.join(d, n)) and n not in olds:
-            errs.append("มีไฟล์ชื่อนี้อยู่แล้ว: " + n)
-    if errs:
-        return 0, errs
-    staged, done = [], 0
-    try:
-        for i, (o, n) in enumerate(pairs):
-            t = ".rn%d_%d.tmp" % (os.getpid(), i)
-            os.rename(os.path.join(d, o), os.path.join(d, t))
-            staged.append((t, o, n))
-        for t, o, n in staged:
-            os.rename(os.path.join(d, t), os.path.join(d, n))
-            done += 1
-    except OSError as e:
-        for t, o, n in staged[done:]:               # พังกลางทาง: คืนชื่อเดิมที่ยังค้างเป็น .tmp
-            try:
-                os.rename(os.path.join(d, t), os.path.join(d, o))
-            except OSError:
-                pass
-        return done, [str(e)]
-    return done, []
-
-
-# ----------------------------------------------------------------- แก้ไข APK + Sign + Clone (เมนู 12)
-def _rd_v8(b, p):
-    n = b[p]
-    if n & 0x80:
-        return ((n & 0x7F) << 8) | b[p + 1], p + 2
-    return n, p + 1
-
-
-class _Pool:
-    """String pool ของ binary XML (AndroidManifest.xml): อ่านค่า, เพิ่ม string ท้ายตาราง (index เดิมไม่ขยับ), แพ็กกลับ"""
-
-    def __init__(self, buf, off):
-        t, hs, size = struct.unpack_from("<HHI", buf, off)
-        if t != 0x0001:
-            raise ValueError("string pool not found")
-        sc, stc, flags, ss, _ys = struct.unpack_from("<5I", buf, off + 8)
-        if stc:
-            raise ValueError("string pool has styles")
-        self.utf8, self.flags, self.end = bool(flags & 0x100), flags, off + size
-        offs = struct.unpack_from("<%dI" % sc, buf, off + hs)
-        self.raw, self.text, self.index = [], [], {}
-        for o in offs:
-            p0 = off + ss + o
-            if self.utf8:
-                _, p = _rd_v8(buf, p0)
-                n, p = _rd_v8(buf, p)
-                txt, e = bytes(buf[p:p + n]).decode("utf-8", "replace"), p + n + 1
-            else:
-                n, p = struct.unpack_from("<H", buf, p0)[0], p0 + 2
-                if n & 0x8000:
-                    n, p = ((n & 0x7FFF) << 16) | struct.unpack_from("<H", buf, p)[0], p + 2
-                txt, e = bytes(buf[p:p + 2 * n]).decode("utf-16-le", "replace"), p + 2 * n + 2
-            self.raw.append(bytes(buf[p0:e]))
-            self.text.append(txt)
-            self.index.setdefault(txt, len(self.text) - 1)
-
-    def add(self, s):
-        if s in self.index:
-            return self.index[s]
-        if self.utf8:
-            b = s.encode("utf-8")
-            v = lambda n: bytes([n]) if n < 0x80 else bytes([0x80 | (n >> 8), n & 0xFF])
-            raw = v(len(s.encode("utf-16-le")) // 2) + v(len(b)) + b + b"\0"
-        else:
-            u = s.encode("utf-16-le")
-            n = len(u) // 2
-            head = struct.pack("<H", n) if n < 0x8000 else struct.pack("<HH", 0x8000 | (n >> 16), n & 0xFFFF)
-            raw = head + u + b"\0\0"
-        self.raw.append(raw)
-        self.text.append(s)
-        self.index[s] = len(self.text) - 1
-        return self.index[s]
-
-    def pack(self):
-        sc, offs, data, cur = len(self.raw), [], bytearray(), 0
-        for r in self.raw:
-            offs.append(cur)
-            data += r
-            cur += len(r)
-        while len(data) % 4:
-            data += b"\0"
-        ss = 28 + 4 * sc
-        return (struct.pack("<HHI5I", 1, 28, ss + len(data), sc, 0, self.flags, ss, 0)
-                + struct.pack("<%dI" % sc, *offs) + bytes(data))
-
-
-def _axml_split(buf):
-    t, hs, _ = struct.unpack_from("<HHI", buf, 0)
-    if t != 0x0003:
-        raise ValueError("not a binary AndroidManifest.xml")
-    pool = _Pool(buf, hs)
-    return pool, bytearray(buf[pool.end:])
-
-
-def _axml_tags(pool, rest):
-    pos = 0
-    while pos + 8 <= len(rest):
-        t, _hs, sz = struct.unpack_from("<HHI", rest, pos)
-        if sz < 8:
-            break
-        if t == 0x0102:
-            _ns, name, a0, asz, ac = struct.unpack_from("<iiHHH", rest, pos + 16)
-            tag = pool.text[name] if 0 <= name < len(pool.text) else ""
-            attrs = []
-            for i in range(ac):
-                ap = pos + 16 + a0 + i * asz
-                _ans, an, _raw, _s, _r, dt, data = struct.unpack_from("<iiiHBBI", rest, ap)
-                aname = pool.text[an] if 0 <= an < len(pool.text) else ""
-                val = pool.text[data] if dt == 3 and data < len(pool.text) else None
-                attrs.append((ap, aname, val))
-            yield tag, attrs
-        pos += sz
-
-
-def axml_get_package(buf):
-    pool, rest = _axml_split(buf)
-    for tag, attrs in _axml_tags(pool, rest):
-        if tag == "manifest":
-            for _ap, an, val in attrs:
-                if an == "package" and val:
-                    return val
-    return ""
-
-
-_CLS_TAGS = {"application", "activity", "activity-alias", "service", "receiver", "provider", "instrumentation"}
-_CLS_ATTRS = {"name", "targetActivity", "parentActivityName", "backupAgent", "manageSpaceActivity"}
-_PERM_TAGS = {"permission", "uses-permission", "uses-permission-sdk-23", "permission-group", "permission-tree"}
-
-
-def axml_patch_package(buf, old, new):
-    """เปลี่ยน package ใน manifest: package=, authorities, ชื่อ permission ของตัวเอง, process/taskAffinity
-    และแปลงชื่อคลาสแบบสัมพัทธ์ (.Foo) เป็นชื่อเต็มของ package เดิม ไม่งั้นแอปหาคลาสไม่เจอหลังเปลี่ยนชื่อ"""
-    pool, rest = _axml_split(buf)
-    changed = 0
-    for tag, attrs in list(_axml_tags(pool, rest)):
-        for ap, an, val in attrs:
-            if not val:
-                continue
-            nv = None
-            if tag == "manifest" and an == "package":
-                nv = new if val == old else None
-            elif tag == "provider" and an == "authorities":
-                nv = val.replace(old, new) if old in val else None
-            elif tag in _PERM_TAGS and an == "name":
-                nv = new + val[len(old):] if val.startswith(old + ".") else None
-            elif an in ("process", "taskAffinity"):
-                nv = new + val[len(old):] if val == old or val.startswith(old + ".") else None
-            elif tag in _CLS_TAGS and an in _CLS_ATTRS:
-                if val.startswith("."):
-                    nv = old + val
-                elif "." not in val and not val.startswith(":"):
-                    nv = old + "." + val
-            if nv is not None and nv != val:
-                idx = pool.add(nv)
-                struct.pack_into("<i", rest, ap + 8, idx)
-                struct.pack_into("<I", rest, ap + 16, idx)
-                changed += 1
-    out = bytearray(buf[:8]) + pool.pack() + rest
-    struct.pack_into("<I", out, 4, len(out))
-    return bytes(out), changed
-
-
-def arsc_patch_package(buf, old, new):
-    """แก้ชื่อ package ในตาราง resources.arsc (ช่องชื่อกว้างคงที่ 128 ตัวอักษร) ให้ getIdentifier() ยังหาเจอ"""
-    buf, n = bytearray(buf), 0
-    if len(buf) < 12 or struct.unpack_from("<H", buf, 0)[0] != 0x0002:
-        return bytes(buf), 0
-    pos = struct.unpack_from("<H", buf, 2)[0]
-    while pos + 8 <= len(buf):
-        ct, _chs, csz = struct.unpack_from("<HHI", buf, pos)
-        if csz < 8:
-            break
-        if ct == 0x0200:
-            name = bytes(buf[pos + 12:pos + 268]).decode("utf-16-le", "replace").split("\0")[0]
-            if name == old:
-                nb = new.encode("utf-16-le")
-                buf[pos + 12:pos + 268] = nb + b"\0" * (256 - len(nb))
-                n += 1
-        pos += csz
-    return bytes(buf), n
-
-
-_PKG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
-_SIG_RE = re.compile(r"^META-INF/[^/]+\.(SF|RSA|DSA|EC)$|^META-INF/MANIFEST\.MF$", re.I)
-
-
-def build_apk_variant(src, dst, old, new):
-    """สร้าง APK ใหม่ที่ package = new (ลายเซ็นเดิมถูกตัดทิ้ง ต้อง Sign ใหม่) พร้อม align ตามที่ Android ต้องการ"""
-    import zipfile
-    tmp = dst + ".tmp"
-    with zipfile.ZipFile(src) as zin:
-        names = set(zin.namelist())
-        if "AndroidManifest.xml" not in names:
-            raise ValueError("ไม่มี AndroidManifest.xml")
-        man, cnt = axml_patch_package(zin.read("AndroidManifest.xml"), old, new)
-        if not cnt:
-            raise ValueError("แก้ manifest ไม่สำเร็จ (package ไม่ตรง %s)" % old)
-        arsc = arsc_patch_package(zin.read("resources.arsc"), old, new)[0] if "resources.arsc" in names else None
-        try:
-            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zout:
-                for info in zin.infolist():
-                    nm = info.filename
-                    if _SIG_RE.match(nm):
-                        continue
-                    zi = zipfile.ZipInfo(nm, info.date_time)
-                    zi.external_attr = info.external_attr
-                    zi.compress_type = zipfile.ZIP_STORED if (nm == "resources.arsc" or info.is_dir()) else info.compress_type
-                    if zi.compress_type == zipfile.ZIP_STORED and not info.is_dir():
-                        al = 16384 if nm.endswith(".so") else 4
-                        pad = (-(zout.fp.tell() + 30 + len(nm.encode("utf-8")))) % al
-                        if pad:
-                            zi.extra = (struct.pack("<HH", 0xD935, pad - 4) + b"\0" * (pad - 4)) if pad >= 4 else b"\0" * pad
-                    if nm == "AndroidManifest.xml":
-                        zout.writestr(zi, man)
-                    elif nm == "resources.arsc" and arsc is not None:
-                        zout.writestr(zi, arsc)
-                    elif info.is_dir():
-                        zout.writestr(zi, b"")
-                    else:
-                        with zin.open(info) as s, zout.open(zi, "w", force_zip64=info.file_size > 0x7FFFFFFF) as d:
-                            shutil.copyfileobj(s, d, 1 << 20)
-            os.replace(tmp, dst)
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-
-
-KS_PASS = "garnt123"
-
-
-def signer_ready():
-    return bool(shutil.which("apksigner") and shutil.which("keytool"))
-
-
-def ensure_signer():
-    if signer_ready():
-        return True
-    if not shutil.which("pkg"):
-        return False
-    say("ยังไม่มี apksigner/keytool (ใช้เซ็น APK)", "yellow")
-    if not confirm("ติดตั้งอัตโนมัติ (pkg install apksigner openjdk-17) ใช้เวลาสักครู่?"):
-        return False
-    rc, out = sh("pkg install -y apksigner openjdk-17", timeout=900)
-    if rc != 0:
-        say("ติดตั้งไม่สำเร็จ: " + scrub(out.strip()[-200:]), "red")
-    return signer_ready()
-
-
-def sign_apk(path):
-    """เซ็น APK ด้วย apksigner (v1+v2+v3) ใช้คีย์เดียวกันทุกตัว เก็บที่ BASE/clone.keystore -> (ok, msg)"""
-    ks = os.path.join(BASE, "clone.keystore")
-    if not os.path.isfile(ks):
-        rc, out = sh("keytool -genkeypair -keystore %s -storepass %s -keypass %s -alias clone -keyalg RSA "
-                     "-keysize 2048 -validity 10000 -dname 'CN=Clone'" % (shlex.quote(ks), KS_PASS, KS_PASS), timeout=120)
-        if rc != 0:
-            return False, "สร้าง keystore ไม่สำเร็จ: " + scrub(out.strip()[-150:])
-    rc, out = sh("apksigner sign --ks %s --ks-pass pass:%s --key-pass pass:%s --ks-key-alias clone %s"
-                 % (shlex.quote(ks), KS_PASS, KS_PASS, shlex.quote(path)), timeout=600)
-    return rc == 0, ("ok" if rc == 0 else scrub(out.strip()[-150:]))
-
-
-def open_in_mt(path):
-    """เปิดไฟล์ใน MT Manager (MT ไม่มี intent สั่งเซ็นอัตโนมัติ ต้องกดเซ็นในแอปเอง)"""
-    q = shlex.quote("file://" + path)
-    rc, _ = sh("am start -a android.intent.action.VIEW -d %s -t application/vnd.android.package-archive -p bin.mt.plus 2>/dev/null" % q,
-               root=ENV.root, timeout=10)
-    if rc != 0:
-        sh("am start -a android.intent.action.VIEW -d %s -t application/vnd.android.package-archive 2>/dev/null" % q,
-           root=ENV.root, timeout=10)
-    return rc == 0
-
-
-def sign_outputs(paths):
-    """เซ็นไฟล์ที่สร้างใหม่: apksigner อัตโนมัติ ถ้าใช้ไม่ได้ให้เปิด MT Manager ทีละไฟล์"""
-    if not paths:
-        return
-    if ensure_signer():
-        for p in paths:
-            ok, msg = sign_apk(p)
-            say("%s Sign %s %s" % ("✓" if ok else "✗", os.path.basename(p), "" if ok else msg), "green" if ok else "red")
-        return
-    say("ไม่มี apksigner -> เปิดใน MT Manager ให้เซ็นเอง (แตะไฟล์ > Sign/เซ็น > ใช้ลายเซ็นทดสอบ)", "yellow")
-    for p in paths:
-        open_in_mt(p)
-        say("เปิด %s ใน MT Manager" % os.path.basename(p), "cyan")
-        if len(paths) > 1:
-            ask("เซ็นเสร็จแล้วกด Enter เพื่อเปิดไฟล์ถัดไป")
-
-
-def parse_aapt_package(apk_path):
-    """ดึง Package Name จาก APK: อ่าน manifest เองก่อน ถ้าไม่ได้ค่อยใช้ aapt"""
-    try:
-        import zipfile
-        with zipfile.ZipFile(apk_path) as z:
-            p = axml_get_package(z.read("AndroidManifest.xml"))
-            if p:
-                return p
-    except Exception:
-        pass
-    for cmd in (f"aapt dump badging {shlex.quote(apk_path)} 2>/dev/null",
-                f"aapt2 dump badging {shlex.quote(apk_path)} 2>/dev/null"):
-        rc, out = sh(cmd, root=ENV.root, timeout=10)
-        if rc == 0:
-            m = re.search(r"package:\s*name=['\"]([^'\"]+)['\"]", out)
-            if m:
-                return m.group(1)
-    return ""
-
-
-def _alpha_suffix(n):                      # 1->a 2->b ... 26->z 27->aa
-    s = ""
-    while n > 0:
-        n, r = divmod(n - 1, 26)
-        s = chr(97 + r) + s
-    return s
-
-
-def clone_names(base, count, style):
-    """style 'abc' -> base+a, base+b, ... | '123' -> base+1, base+2, ..."""
-    return [base + (_alpha_suffix(i) if style == "abc" else str(i)) for i in range(1, count + 1)]
-
-
-def _pick_apk(files, d):
-    try:
-        i = int(ask("เลือกเลขไฟล์ APK:")) - 1
-        if i < 0:
-            raise IndexError
-        return files[i]
-    except (ValueError, IndexError):
-        say("เลขไม่ถูกต้อง", "red")
-        return None
-
-
-def _build_many(d, src_name, old, targets):
-    src = os.path.join(d, src_name)
-    made = []
-    for i, new in enumerate(targets, 1):
-        dst = os.path.join(d, new + ".apk")
-        say("[%d/%d] สร้าง %s ..." % (i, len(targets), new), "dim")
-        try:
-            build_apk_variant(src, dst, old, new)
-            made.append(dst)
-        except Exception as e:
-            say("✗ %s: %s" % (new, scrub(e)), "red")
-    return made
-
-
-def menu_rename_apk(cfg):
-    """Menu 12: จัดการ .apk ใน Download — เปลี่ยนชื่อไฟล์ / เปลี่ยน Package จริง / Clone หลายตัว + Sign"""
-    d = dl_dir()
-    if not d:
-        say("ไม่พบ /sdcard/Download (ยังไม่อนุญาตที่เก็บข้อมูล?)", "red")
-        return pause()
-    while True:
-        banner(cfg)
-        files = apk_files(d)
-        if not files:
-            say("ไม่พบไฟล์ .apk ใน %s (ไม่ค้นโฟลเดอร์ย่อย)" % d, "red")
-            return pause()
-
-        t = Table(title="จัดการไฟล์ .apk (%d ไฟล์)" % len(files), box=box.ROUNDED, header_style="bold cyan")
-        t.add_column("#")
-        t.add_column("ชื่อไฟล์")
-        t.add_column("Package Name ที่อ่านได้")
-        t.add_column("ขนาด")
-        apk_info_list = []
-        for i, n in enumerate(files, 1):
-            fullpath = os.path.join(d, n)
-            pkg_name = parse_aapt_package(fullpath)
-            try:
-                mb = "%.1f MB" % (os.path.getsize(fullpath) / 1048576)
-            except OSError:
-                mb = "-"
-            t.add_row(str(i), Text(n), Text(pkg_name or "(อ่านไม่ได้)", style="yellow" if not pkg_name else "green"), mb)
-            apk_info_list.append((n, pkg_name))
-        console.print(t)
-        say("  [1] เปลี่ยนชื่อไฟล์ทั้งหมดตาม Package Name + เปิด MT Manager", "bold")
-        say("  [2] เปลี่ยนชื่อไฟล์ทีละไฟล์แบบกำหนดเอง", "bold")
-        say("  [3] เปลี่ยน Package Name จริงในตัว APK (rename package) + Sign", "bold")
-        say("  [4] Clone หลายตัว: กำหนดจำนวน + ต่อท้าย ABC หรือ 123 + Sign", "bold")
-        c = ask("เลือก (0=กลับ)")
-        if c == "0":
-            return
-
-        if c == "1":
-            if not confirm("เปลี่ยนชื่อไฟล์ .apk ทั้งหมดให้ตรงกับ Package Name และเปิดใน MT Manager หรือไม่?"):
-                continue
-            success_count = 0
-            for old_name, pkg_name in apk_info_list:
-                if not pkg_name:
-                    say(f"ข้าม {old_name}: ไม่สามารถอ่าน Package Name ได้", "yellow")
-                    continue
-                new_name = f"{pkg_name}.apk"
-                old_path, new_path = os.path.join(d, old_name), os.path.join(d, new_name)
-                if old_path != new_path:
-                    try:
-                        if os.path.exists(new_path):
-                            os.remove(new_path)
-                        os.rename(old_path, new_path)
-                        say(f"เปลี่ยนชื่อ: {old_name} ➔ {new_name}", "green")
-                    except Exception as e:
-                        say(f"เปลี่ยนชื่อ {old_name} ไม่สำเร็จ: {e}", "red")
-                        continue
-                else:
-                    say(f"ไฟล์ {old_name} ใช้ชื่อ Package Name อยู่แล้ว", "dim")
-                open_in_mt(new_path)
-                say(f"➔ เปิด {new_name} ใน MT Manager แล้ว", "cyan")
-                success_count += 1
-                time.sleep(1)
-            say(f"ดำเนินการเสร็จสิ้น {success_count} ไฟล์", "green")
-            pause()
-
-        elif c == "2":
-            old = _pick_apk(files, d)
-            if not old:
-                pause()
-                continue
-            new = clean_apk_name(ask("ชื่อใหม่ (ไม่ต้องพิมพ์ .apk):"))
-            if not new:
-                say("ชื่อว่าง ยกเลิก", "red")
-                pause()
-                continue
-            done, errs = apply_renames(d, [(old, new)])
-            if done:
-                say(f"เปลี่ยนชื่อสำเร็จเป็น {new}", "green")
-                if confirm("เปิดใน MT Manager เลยหรือไม่?"):
-                    open_in_mt(os.path.join(d, new))
-            for e in errs:
-                say("✗ " + e, "red")
-            pause()
-
-        elif c == "3":
-            name = _pick_apk(files, d)
-            if not name:
-                pause()
-                continue
-            old = dict(apk_info_list)[name]
-            if not old:
-                say("อ่าน Package เดิมของไฟล์นี้ไม่ได้ (ต้องเป็น APK เต็ม ไม่ใช่ split)", "red")
-                pause()
-                continue
-            new = ask("Package ใหม่ (เช่น com.roblox.clienta):").strip()
-            if not _PKG_RE.match(new) or len(new) > 127 or new == old:
-                say("ชื่อ package ไม่ถูกต้อง หรือซ้ำของเดิม", "red")
-                pause()
-                continue
-            say("ไฟล์เดิมไม่ถูกแตะ จะได้ไฟล์ใหม่ %s.apk" % new, "dim")
-            made = _build_many(d, name, old, [new])
-            sign_outputs(made)
-            say("เสร็จแล้ว: ติดตั้ง %s.apk จาก Download ได้เลย" % new if made else "ไม่สำเร็จ", "green" if made else "red")
-            pause()
-
-        elif c == "4":
-            name = _pick_apk(files, d)
-            if not name:
-                pause()
-                continue
-            old = dict(apk_info_list)[name]
-            if not old:
-                say("อ่าน Package เดิมของไฟล์นี้ไม่ได้ (ต้องเป็น APK เต็ม ไม่ใช่ split)", "red")
-                pause()
-                continue
-            base = ask("ชื่อ package ฐาน (Enter = %s):" % old).strip() or old
-            if not _PKG_RE.match(base):
-                say("ชื่อ package ไม่ถูกต้อง", "red")
-                pause()
-                continue
-            try:
-                count = int(ask("จำนวน clone (1-60):"))
-                if not 1 <= count <= 60:
-                    raise ValueError
-            except ValueError:
-                say("จำนวนไม่ถูกต้อง", "red")
-                pause()
-                continue
-            style = {"1": "abc", "2": "123"}.get(ask("ต่อท้ายด้วย  1=ABC (a,b,c..)  2=123 (1,2,3..)"))
-            if not style:
-                say("ยกเลิก", "red")
-                pause()
-                continue
-            targets = [n for n in clone_names(base, count, style) if n != old]
-            say("จะสร้าง %d ไฟล์: %s%s" % (len(targets), ", ".join(targets[:4]), " ..." if len(targets) > 4 else ""), "cyan")
-            say("แต่ละไฟล์ใหญ่เท่าต้นฉบับ (ตรวจพื้นที่ว่างก่อน) และใช้เวลาพอสมควร", "dim")
-            if not confirm("เริ่มสร้าง + Sign เลยหรือไม่?"):
-                continue
-            made = _build_many(d, name, old, targets)
-            sign_outputs(made)
-            say("เสร็จ %d/%d ไฟล์ ใน %s" % (len(made), len(targets), d), "green")
-            pause()
-
-
 UPDATE_URL = "https://raw.githubusercontent.com/Garnt024020806/TOOL/main/rejoin.py"
 
 
@@ -3827,6 +3347,58 @@ def run_update():
     say("อัปเดตแล้ว v%s -> v%s (เก็บของเก่าไว้ที่ %s.bak) รันโปรแกรมใหม่เพื่อใช้เวอร์ชันนี้" % (VERSION, remote, os.path.basename(me)), "green")
     UPDATE_INFO["remote"] = None
     return "updated"
+
+
+def run_rollback():
+    """Swap rejoin.py with rejoin.py.bak (the copy kept by run_update). Checks the backup parses first.
+    The current file becomes the new .bak, so running it twice returns to where you were. -> "ok" | "error" """
+    me = os.path.abspath(__file__)
+    bak = me + ".bak"
+    if not os.path.isfile(bak):
+        say("ไม่พบไฟล์สำรอง %s.bak (ยังไม่เคยอัปเดต?)" % os.path.basename(me), "red")
+        return "error"
+    try:
+        with open(bak, "rb") as f:
+            old = f.read()
+        with open(me, "rb") as f:
+            cur = f.read()
+        compile(old, "rejoin.py.bak", "exec")
+    except (OSError, SyntaxError) as e:
+        say("ไฟล์สำรองใช้ไม่ได้: %s" % scrub(e)[:80], "red")
+        return "error"
+    m = re.search(r'^VERSION\s*=\s*"([^"]+)"', old.decode("utf-8", "replace"), re.M)
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(me), suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(old)
+        os.replace(tmp, me)
+        with open(bak, "wb") as f:
+            f.write(cur)
+    except OSError as e:
+        say("ย้อนกลับไม่ได้: %s" % scrub(e)[:80], "red")
+        return "error"
+    sd = "/sdcard/Download/rejoin.py"
+    if os.path.isfile(sd) and os.path.abspath(sd) != me:
+        try:
+            with open(sd, "wb") as f:
+                f.write(old)
+        except OSError:
+            pass
+    say("ย้อนกลับเป็น v%s แล้ว (เวอร์ชันที่เพิ่งใช้อยู่ถูกเก็บเป็น .bak) รันโปรแกรมใหม่เพื่อใช้งาน" % (m.group(1) if m else "?"), "green")
+    return "ok"
+
+
+def menu_update():
+    say("1) อัปเดตจาก GitHub   2) ย้อนกลับเป็นเวอร์ชันก่อนหน้า (.bak)   0) กลับ", "cyan")
+    c = ask("เลือก (Enter=1):", "1")
+    if c == "1":
+        run_update()
+    elif c == "2":
+        if confirm("ย้อนกลับเป็นไฟล์สำรอง?"):
+            run_rollback()
+    else:
+        return
+    pause()
 
 
 # ----------------------------------------------------------------- เทสเครื่อง (Cloud Phone): CPU / RAM / GPU
@@ -4073,12 +3645,214 @@ def menu_bench(cfg):
         pause()
 
 
+def backup_files():
+    try:
+        names = [n for n in os.listdir(BACKUP_DIR) if n.endswith(".json")]
+    except OSError:
+        return []
+    return sorted(names, reverse=True)
+
+
+def export_config(cfg, tag="config"):
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    path = os.path.join(BACKUP_DIR, "%s-%s.json" % (tag, datetime.now().strftime("%Y%m%d-%H%M%S")))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg.d, f, ensure_ascii=False, indent=2)
+    for n in [n for n in backup_files() if n.startswith("config-")][10:]:   # keep newest 10 manual exports
+        try:
+            os.remove(os.path.join(BACKUP_DIR, n))
+        except OSError:
+            pass
+    return path
+
+
+def import_config(cfg, name):
+    path = os.path.join(BACKUP_DIR, os.path.basename(name))
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict):
+        raise ValueError("ไฟล์ไม่ใช่ค่าตั้งค่า")
+    new = merge(DEFAULTS, raw)
+    export_config(cfg, "before-import")
+    cfg.d.clear()
+    cfg.d.update(new)
+    cfg.save()
+
+
+LOG_TS = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ \[\w+\] (.*)$")
+LOG_CRASH = re.compile(r"^(#\d+ \S+): (.+?) \(ครั้งที่ \d+\) รีจอยใน \d+s$")
+LOG_REJOIN = re.compile(r"^(#\d+ \S+): รีจอยแล้ว \(ครั้งที่ \d+\)$")
+
+
+def log_files():
+    try:
+        return sorted(os.path.join(LOG_DIR, n) for n in os.listdir(LOG_DIR) if n.startswith("rejoin.log"))
+    except OSError:
+        return []
+
+
+def log_summary(hours):
+    """-> {label: {"crash": n, "rejoin": n, "reasons": {text: n}}} for the last `hours` hours."""
+    since = datetime.now().timestamp() - hours * 3600
+    out = {}
+    for fp in log_files():
+        try:
+            if os.path.getmtime(fp) < since:
+                continue
+            with open(fp, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = LOG_TS.match(line.rstrip("\n"))
+                    if not m:
+                        continue
+                    try:
+                        if datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() < since:
+                            continue
+                    except ValueError:
+                        continue
+                    msg = m.group(2)
+                    c, r = LOG_CRASH.match(msg), LOG_REJOIN.match(msg)
+                    if c:
+                        d = out.setdefault(c.group(1), {"crash": 0, "rejoin": 0, "reasons": {}})
+                        d["crash"] += 1
+                        d["reasons"][c.group(2)] = d["reasons"].get(c.group(2), 0) + 1
+                    elif r:
+                        out.setdefault(r.group(1), {"crash": 0, "rejoin": 0, "reasons": {}})["rejoin"] += 1
+        except OSError:
+            continue
+    return out
+
+
+def show_log_tail(n=30):
+    fp = os.path.join(LOG_DIR, "rejoin.log")
+    try:
+        with open(fp, encoding="utf-8", errors="replace") as f:
+            lines = list(deque(f, maxlen=n))
+    except OSError:
+        say("ยังไม่มีไฟล์ log", "yellow")
+        return
+    for ln in lines:
+        say(ln.rstrip("\n")[:200])
+
+
+def menu_alert(cfg):
+    a = cfg.d["alert"]
+    rows = [("enabled", "เปิดการแจ้งเตือนผิดปกติ", None),
+            ("storm_count", "หลุด/ค้างกี่ครั้งถึงแจ้ง (2-50)", (2, 50)),
+            ("storm_window_min", "ภายในกี่นาที (1-1440)", (1, 1440)),
+            ("cooldown_min", "เว้นกี่นาทีก่อนแจ้งซ้ำ (1-1440)", (1, 1440)),
+            ("low_ram_mb", "แจ้งเมื่อแรมว่างต่ำกว่า MB (0=ใช้ค่าของล้างแรม)", (0, 100000))]
+    while True:
+        banner(cfg)
+        t = Table(title="แจ้งเตือนผิดปกติ (ส่งเข้า Discord ผ่านเหตุการณ์ \"แจ้งเตือนผิดปกติ\" ในเมนู 7)", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
+            t.add_column(col)
+        for i, (k, label, rng) in enumerate(rows, 1):
+            t.add_row(str(i), label, onoff(a[k]) if rng is None else str(a[k]))
+        console.print(t)
+        c = ask("เลือกหมายเลข (0=กลับ)")
+        if c == "0":
+            return
+        if c == "1":
+            a["enabled"] = not a["enabled"]
+        elif c.isdigit() and 2 <= int(c) <= len(rows):
+            k, label, rng = rows[int(c) - 1]
+            v = ask("%s:" % label)
+            if v.isdigit() and rng[0] <= int(v) <= rng[1]:
+                a[k] = int(v)
+            else:
+                say("ค่าต้องอยู่ระหว่าง %d-%d" % rng, "red")
+                pause()
+                continue
+        else:
+            continue
+        cfg.save()
+
+
+def menu_tools(cfg):
+    while True:
+        banner(cfg)
+        t = Table(title="สำรอง/กู้ค่า + log + แจ้งเตือน", box=box.ROUNDED, header_style="bold cyan")
+        t.add_column("#")
+        t.add_column("รายการ")
+        t.add_row("1", "สำรองค่าตั้งค่า (config.json -> backup/)")
+        t.add_row("2", "กู้ค่าตั้งค่าจากไฟล์สำรอง")
+        t.add_row("3", "ดู log ล่าสุด 30 บรรทัด")
+        t.add_row("4", "สรุปรีจอย/หลุดต่ออินสแตนซ์ (ย้อนหลัง N ชั่วโมง)")
+        t.add_row("5", "ตั้งค่าแจ้งเตือนผิดปกติ (รีจอยถี่ / แรมต่ำ)")
+        console.print(t)
+        c = ask("เลือกหมายเลข (0=กลับ)")
+        if c == "0":
+            return
+        if c == "1":
+            try:
+                say("สำรองแล้ว: " + export_config(cfg), "green")
+                say("ไฟล์นี้มี URL Webhook อยู่ ห้ามแชร์ให้ใคร (คุกกี้ไม่ได้อยู่ในไฟล์นี้)", "yellow")
+            except OSError as e:
+                say("สำรองไม่ได้: %s" % scrub(e)[:80], "red")
+            pause()
+        elif c == "2":
+            names = backup_files()
+            if not names:
+                say("ยังไม่มีไฟล์สำรองใน " + BACKUP_DIR, "yellow")
+            else:
+                for i, n in enumerate(names[:15], 1):
+                    say("  %d) %s" % (i, n))
+                v = ask("เลือกไฟล์ (0=ยกเลิก):")
+                if v.isdigit() and 1 <= int(v) <= min(15, len(names)):
+                    if confirm("กู้ค่าจาก %s (ค่าปัจจุบันจะถูกสำรองไว้ก่อน)?" % names[int(v) - 1]):
+                        try:
+                            import_config(cfg, names[int(v) - 1])
+                            say("กู้ค่าแล้ว", "green")
+                        except (OSError, ValueError) as e:
+                            say("กู้ไม่ได้: %s" % scrub(e)[:80], "red")
+            pause()
+        elif c == "3":
+            show_log_tail()
+            pause()
+        elif c == "4":
+            v = ask("ย้อนหลังกี่ชั่วโมง (1-168, Enter=24):", "24")
+            hrs = int(v) if v.isdigit() and 1 <= int(v) <= 168 else 24
+            data = log_summary(hrs)
+            if not data:
+                say("ไม่พบเหตุการณ์หลุด/รีจอยใน %d ชั่วโมงที่ผ่านมา" % hrs, "yellow")
+            else:
+                tb = Table(title="สรุปย้อนหลัง %d ชั่วโมง" % hrs, box=box.ROUNDED, header_style="bold cyan")
+                for col in ("อินสแตนซ์", "หลุด/ค้าง", "รีจอยแล้ว", "สาเหตุบ่อยสุด"):
+                    tb.add_column(col)
+                for label, d in sorted(data.items(), key=lambda kv: -kv[1]["crash"]):
+                    top = max(d["reasons"].items(), key=lambda kv: kv[1])[0] if d["reasons"] else "-"
+                    tb.add_row(T(label), str(d["crash"]), str(d["rejoin"]), T(top))
+                console.print(tb)
+            pause()
+        elif c == "5":
+            menu_alert(cfg)
+
+
 MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
         ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
         ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("11", "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)"),
-        ("12", "จัดการ .apk: เปลี่ยนชื่อ / เปลี่ยน Package / Clone + Sign"),
-        ("13", "เทสเครื่อง Cloud Phone (CPU / RAM / GPU)"), ("0", "ออก")]
+        ("12", "เทสเครื่อง Cloud Phone (CPU / RAM / GPU)"), ("13", "สำรอง/กู้ค่า + ดู log + แจ้งเตือนผิดปกติ"), ("0", "ออก")]
+
+
+def ensure_java():
+    """เช็ก Java ถ้ายังไม่มีและมี pkg (Termux) จะติดตั้ง openjdk-17 ให้ ไม่สำเร็จก็ข้าม ไม่ให้โปรแกรมล้ม"""
+    if shutil.which("java"):
+        return True
+    if not shutil.which("pkg"):
+        say("ไม่พบ Java และไม่มีคำสั่ง pkg (ไม่ใช่ Termux?) ข้ามการติดตั้ง", "yellow")
+        return False
+    say("ไม่พบ Java กำลังติดตั้ง openjdk-17 (ครั้งเดียว อาจใช้เวลาสักครู่)...", "yellow")
+    try:
+        r = subprocess.run(["pkg", "install", "-y", "openjdk-17"], timeout=900)
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("ติดตั้ง Java ไม่สำเร็จ: %s", e)
+        say("ติดตั้ง Java ไม่สำเร็จ ลองเอง: pkg install openjdk-17", "red")
+        return False
+    ok = r.returncode == 0 and bool(shutil.which("java"))
+    log.info("ติดตั้ง Java: %s", "สำเร็จ" if ok else "ล้มเหลว rc=%s" % r.returncode)
+    say("ติดตั้ง Java สำเร็จ" if ok else "ติดตั้ง Java ไม่สำเร็จ ลองเอง: pkg install openjdk-17", "green" if ok else "red")
+    return ok
 
 
 def main():
@@ -4086,6 +3860,7 @@ def main():
     cfg = Config()
     STREAMER["on"] = bool(cfg.d["ui"]["streamer_mode"])
     setup_logging()
+    ensure_java()
     hook = Hook(cfg)
     start_update_watch(cfg, hook)
     apply_perf(cfg)
@@ -4130,12 +3905,11 @@ def main():
         elif c == "10":
             menu_list(cfg)
         elif c == "11":
-            run_update()
-            pause()
+            menu_update()
         elif c == "12":
-            menu_rename_apk(cfg)
-        elif c == "13":
             menu_bench(cfg)
+        elif c == "13":
+            menu_tools(cfg)
         elif c == "0":
             say("ลาก่อน!", "cyan")
             return
@@ -4144,6 +3918,8 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].lower() in ("update", "--update", "-u"):
         sys.exit(0 if run_update() != "error" else 1)
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("rollback", "--rollback"):
+        sys.exit(0 if run_rollback() == "ok" else 1)
     try:
         main()
     except KeyboardInterrupt:
