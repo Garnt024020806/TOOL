@@ -329,7 +329,9 @@ DEFAULTS = {
     "ui": {"streamer_mode": True, "lang": "th"},   # hide account names on screen (first 4 chars + #)
     "console_webhook": {"enabled": False, "url": "", "flush_sec": 10},   # blank url = reuse the main webhook
     "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False,
-            "kill_others": False, "protect": ["termux", "magisk", "delta"]},
+            "kill_others": False, "protect": ["Garnt 1" , "Garnt 2" , "Garnt 3" , "Garnt 4" , "Garnt 5" , "Garnt 6" 
+                                                          "Roblox 1" , "Roblox 2" , "Roblox 3" , "Roblox 4" , "Roblox 5" , "Roblox 6" ,
+                                                        , "Termux" , "Control Screen Orietation"]},
     "webhook": {
         "url": "",
         "enabled": False,
