@@ -576,6 +576,16 @@ def AM():
     return "/system/bin/am" if ENV.root and os.path.exists("/system/bin/am") else "am"
 
 
+def stop_cmd(pkg, why=""):
+    """The single place that builds `am force-stop`. Refuses Termux (any variant) and anything that is not a plain
+    package name, and logs every stop (package + reason) so a surprise kill can be matched to a log time."""
+    if not re.fullmatch(r"[A-Za-z0-9_.]+", pkg or "") or "termux" in pkg.lower():
+        log.warning("force-stop REFUSED for %r (%s)", pkg, why)
+        return ""
+    log.info("force-stop %s (%s)", pkg, why)
+    return AM() + " force-stop " + shlex.quote(pkg)
+
+
 RAM_LAST = {"detail": ""}
 DROP = {"ok": None}   # None = not probed yet
 
@@ -601,7 +611,9 @@ def kill_others(cfg):
     pool = third & running
     victims = [p for p in sorted(pool) if p not in keep and not any(x in p.lower() for x in prot)]
     if victims:                                        # ONE shell call instead of one per app
-        sh("; ".join(AM() + " force-stop " + shlex.quote(p) for p in victims), root=True, timeout=60)
+        cmds = [c for c in (stop_cmd(p, "kill_others") for p in victims) if c]
+        if cmds:
+            sh("; ".join(cmds), root=True, timeout=60)
     return victims, ps_ok
 
 
@@ -751,7 +763,9 @@ def parse_link(link):
 def open_game(pkg, uri, force_stop):
     q = shlex.quote
     if ENV.root and force_stop:
-        sh(AM() + " force-stop " + q(pkg), root=True, timeout=20)
+        c = stop_cmd(pkg, "relaunch")
+        if c:
+            sh(c, root=True, timeout=20)
         time.sleep(2)
     tail = "-a android.intent.action.VIEW -d %s -p %s -f 0x10008000" % (q(uri), q(pkg))
     rc, out = sh(AM() + " start " + tail, root=ENV.root, timeout=30)
@@ -922,7 +936,9 @@ def inject_cookie(pkg, cookie):
     own = own.strip()
     if not re.fullmatch(r"\d+:\d+", own):
         return False, "อ่านเจ้าของโฟลเดอร์แอปไม่ได้"
-    sh(AM() + " force-stop " + q(pkg), root=True)
+    c = stop_cmd(pkg, "inject_cookie")
+    if c:
+        sh(c, root=True)
     tmp = os.path.join(TMP_DIR, "garnt_%s.db" % pkg.replace(".", "_"))
     try:
         rc, o = sh("cp %s %s && chmod 666 %s" % (q(path), q(tmp), q(tmp)), root=True)
@@ -1122,7 +1138,9 @@ def logout_package(pkg):
     if not re.fullmatch(r"[\w.]+", pkg or ""):
         return False, "ชื่อแพ็กเกจไม่ถูกต้อง"
     q = shlex.quote
-    sh(AM() + " force-stop " + q(pkg), root=True, timeout=20)
+    c = stop_cmd(pkg, "logout")
+    if c:
+        sh(c, root=True, timeout=20)
     path = find_cookie_db(pkg)
     targets = [path, path + "-journal", path + "-wal", path + "-shm"] if path else []
     targets.append("/data/data/%s/files/appData/LocalStorage/appStorage.json" % pkg)
@@ -3307,7 +3325,8 @@ def kill_all_roblox(cfg):
     done = 0
     for i, pkg in enumerate(pkgs, 1):
         try:
-            rc, out = sh(AM() + " force-stop " + shlex.quote(pkg), root=True, timeout=20)
+            c = stop_cmd(pkg, "close_all")
+            rc, out = sh(c, root=True, timeout=20) if c else (1, "ไม่อนุญาตให้ปิดแอปนี้")
         except Exception as e:
             rc, out = 1, str(e)
         ok = rc == 0
