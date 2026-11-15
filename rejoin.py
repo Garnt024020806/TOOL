@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,16 +41,129 @@ try:
     from rich.console import Console, Group
     from rich.live import Live
     from rich.panel import Panel
-    from rich.table import Table
+    from rich.table import Table as _RichTable
     from rich.text import Text
 except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "2.0"
+VERSION = "2.1"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
-KNOWN_EXEC_DIRS = ("/storage/emulated/0/Delta/Autoexecute", ARCEUS_AUTOEXEC)
+EXTRA_EXEC_DIRS = (
+    "/storage/emulated/0/Fluxus/Autoexec", "/storage/emulated/0/Codex/Autoexec",
+    "/storage/emulated/0/Cryptic/Autoexec", "/storage/emulated/0/Punk/Autoexec",
+    "/storage/emulated/0/Trigon/Autoexec", "/storage/emulated/0/FrostWare/Autoexec",
+    "/storage/emulated/0/Evon/Autoexec", "/storage/emulated/0/RonixExploit/Autoexec")
+KNOWN_EXEC_DIRS = ("/storage/emulated/0/Delta/Autoexecute", ARCEUS_AUTOEXEC) + EXTRA_EXEC_DIRS
+
+# ----------------------------------------------------------------- UI language (TH / EN)
+LANG = {"en": False}
+EN = {
+    # main menu
+    "เริ่มรีจอยอัตโนมัติ": "Start auto rejoin",
+    "แสดงอินสแตนซ์ / สถานะ": "Instances / status",
+    "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)": "Settings (game link, check interval, launch delay)",
+    "สแกนแพ็กเกจ": "Scan packages",
+    "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox / ล็อกเอาต์)": "Cookies (login / pull from app / logout)",
+    "ตั้งค่าอัตโนมัติ": "Automation settings",
+    "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)": "Block / unblock / add friend (via cookie)",
+    "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)": "Open / close all Roblox (adjustable delay)",
+    "แสดงรายการอินสแตนซ์": "List instances",
+    "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)": "Update tool (checks version first)",
+    "เทสเครื่อง Cloud Phone (CPU / RAM / GPU)": "Benchmark cloud phone (CPU / RAM / GPU)",
+    "สำรอง/กู้ค่า + ดู log + แจ้งเตือนผิดปกติ": "Backup/restore + logs + anomaly alerts",
+    "ฟีเจอร์เสริม (บอท Telegram / ตรวจแบน / สลับบัญชี)": "Extras (Telegram bot / ban check / account switch)",
+    "ออก": "Exit",
+    "เลือกเมนู:": "Choose menu:",
+    "เลือกหมายเลข (0=กลับ)": "Choose a number (0=back)",
+    "กด Enter เพื่อกลับเมนู": "Press Enter to go back",
+    "เปิด": "On", "ปิด": "Off", "รายการ": "Item", "ค่า": "Value", "หมายเหตุ": "Note",
+    "ค่าปัจจุบัน": "Current value", "เมนูย่อย": "Submenu", "เฉพาะรูท": "Root only",
+    # settings
+    "ตั้งค่า": "Settings",
+    "ลิงก์เกม / Place ID": "Game link / Place ID",
+    "ช่วงเวลาตรวจสอบ (วินาที)": "Check interval (seconds)",
+    "หน่วงเวลาเปิดแต่ละอินสแตนซ์ (วินาที)": "Delay between launches (seconds)",
+    "ซ่อนชื่อบัญชี (streamer mode: โชว์ 4 ตัวแรก ที่เหลือเป็น #)": "Hide account names (streamer mode)",
+    "ภาษา / Language (ไทย/English)": "Language (Thai/English)",
+    "(ยังไม่ตั้ง)": "(not set)",
+    # automation
+    "เริ่มรีจอยทันทีเมื่อเปิดเครื่องมือ": "Start rejoining as soon as the tool opens",
+    "เปิด Wake-lock ขณะรัน": "Hold wake-lock while running",
+    "Force-stop ก่อนเปิดเกมใหม่": "Force-stop before relaunching the game",
+    "ตรวจว่าแอปอยู่หน้าจอ": "Check the app is in the foreground",
+    "แคปหน้าจอเมื่อหลุด/ค้าง": "Screenshot on disconnect/hang",
+    "ล็อกอินด้วยคุกกี้อัตโนมัติก่อนเริ่ม": "Cookie login before start",
+    "ตรวจสถานะในเกมผ่าน Roblox API (ต้องมีคุกกี้)": "Check in-game status via Roblox API (needs cookie)",
+    "ดึงคุกกี้จากแอปมาเก็บอัตโนมัติก่อนเริ่ม (เฉพาะอินสแตนซ์ที่ยังไม่มีคุกกี้)": "Auto-pull cookies from apps before start (instances without a cookie)",
+    "ถ้าหลุด 1 อินสแตนซ์ ให้รีจอยทุกอินสแตนซ์ด้วย": "If one instance drops, rejoin all instances",
+    "ตรวจแบน/คำเตือนของบัญชีผ่าน Roblox API (แจ้งเตือน + หยุดตัวนั้น)": "Check account ban/warning via Roblox API (alert + pause that instance)",
+    "หยุดรีจอยเมื่อ Roblox ขอ Captcha/FaceID (แจ้งให้ทำเอง)": "Pause rejoin when Roblox asks for Captcha/FaceID (you solve it)",
+    "สลับไปใช้บัญชีสำรองจาก cookie.txt เมื่อคุกกี้ตาย/ถูกแบน": "Swap in a spare account from cookie.txt when a cookie dies / is banned",
+    "รีจอยตามเวลา (นาที, 0=ปิด)": "Timed rejoin (minutes, 0=off)",
+    "เวลารอเข้าเกมหลังเปิดแอป (วินาที)": "Join grace after launch (seconds)",
+    "Heartbeat (สคริปต์ในเกม) ...": "Heartbeat (in-game script) ...",
+    "ประสิทธิภาพ: ล้างแรม / ลดการใช้ CPU ...": "Performance: clear RAM / lower CPU ...",
+    "เลือกหมายเลขเพื่อสลับ/แก้ไข (0=กลับ)": "Choose a number to toggle/edit (0=back)",
+    # cookies
+    "คุกกี้": "Cookies",
+    "ตรวจ / ใส่คุกกี้จาก cookie.txt ลงแอป (ล็อกอินด้วยคุกกี้)": "Check / inject cookies from cookie.txt into the apps",
+    "ดึงคุกกี้จากแอป Roblox มาเก็บใน cookie.txt (ไว้เช็คสถานะผ่าน API) — รูท": "Pull cookies from Roblox apps into cookie.txt (root)",
+    "ล็อกเอาต์แพ็กเกจ (ลบคุกกี้ในแอป + appStorage) — รูท": "Log out a package (delete in-app cookie + appStorage) (root)",
+    # webhook
+    "URL Webhook": "Webhook URL",
+    "เปิดใช้งาน Webhook": "Enable webhook",
+    "ส่งข้อความทดสอบ": "Send test message",
+    "แจ้งเตือน: เริ่มทำงาน": "Notify: start", "แจ้งเตือน: หลุด/ค้าง": "Notify: drop/hang",
+    "แจ้งเตือน: รีจอยแล้ว": "Notify: rejoined", "แจ้งเตือน: หยุดทำงาน": "Notify: stop",
+    "แจ้งเตือน: รายงานสถานะ+ภาพหน้าจอเป็นรอบ": "Notify: periodic status + screenshot",
+    "แจ้งเตือน: แจ้งเตือนผิดปกติ (รีจอยถี่/แรมต่ำ)": "Notify: anomaly (frequent rejoin / low RAM)",
+    "แจ้งเตือน: บัญชีถูกจำกัด/แบน": "Notify: account restricted/banned",
+    "แจ้งเตือน: ต้องยืนยัน Captcha/FaceID": "Notify: Captcha/FaceID required",
+    "Ping ใน webhook (Discord ID หรือ @everyone / @here)": "Webhook ping (Discord ID or @everyone / @here)",
+    "ชื่ออุปกรณ์ (แสดงท้าย embed)": "Device name (shown in embed footer)",
+    # open/close all, list
+    "เปิด / ปิด Roblox ทั้งหมด": "Open / close all Roblox",
+    "รายการอินสแตนซ์": "Instances",
+    "อินสแตนซ์ที่ตรวจพบ": "Detected instances",
+    "แพ็กเกจ": "Package", "เลือกรัน": "Selected", "ทำงานอยู่": "Running", "อยู่หน้าจอ": "Foreground",
+    "บัญชี": "Account", "สถานะ": "State", "เล่นมา": "Uptime", "ล้มเหลว": "Fails", "รีจอยแล้ว": "Rejoined",
+    "ถัดไป": "Next", "รายละเอียด": "Details",
+    # heartbeat menu
+    "สร้างไฟล์สคริปต์ .lua ให้แต่ละอินสแตนซ์ (โฟลเดอร์ heartbeat/)": "Generate a .lua file per instance (heartbeat/ folder)",
+    "สร้าง/อัปเดต heartbeat.lua ตอนนี้": "Create/update heartbeat.lua now",
+    "นำเข้าสคริปต์ของคุณลง autoexec (วางโค้ด / ไฟล์ / ลิงก์)": "Import your own script into autoexec (paste / file / URL)",
+    # extras menu
+    "ฟีเจอร์เสริม": "Extras",
+    "ตรวจแบน/คำเตือนทุกกี่นาที": "Ban/warning check every N minutes",
+    "สลับบัญชีตามเวลา (นาที, 0=ปิด) ใช้บัญชีสำรองใน cookie.txt": "Rotate accounts by time (minutes, 0=off) using spare cookies",
+    "บัญชีสำรองใน cookie.txt (บรรทัดที่เกินจำนวนอินสแตนซ์)": "Spare accounts in cookie.txt (lines beyond instance count)",
+    "บอท Telegram ควบคุมระยะไกล": "Telegram remote-control bot",
+    "Bot token": "Bot token", "Chat ID ที่อนุญาต": "Allowed chat ID", "ทดสอบบอท": "Test the bot",
+    "(ยังไม่ตั้ง)": "(not set)",
+}
+
+
+def tr(s):
+    """UI language: Thai text -> English when the English UI is on (strings without a translation stay as they are)."""
+    return EN.get(s, s) if (LANG["en"] and isinstance(s, str)) else s
+
+
+class Table(_RichTable):
+    """rich Table that translates plain-string titles, headers and cells."""
+
+    def __init__(self, *headers, **kw):
+        if isinstance(kw.get("title"), str):
+            kw["title"] = tr(kw["title"])
+        super().__init__(*[tr(h) for h in headers], **kw)
+
+    def add_column(self, header="", *a, **kw):
+        return super().add_column(tr(header), *a, **kw)
+
+    def add_row(self, *cells, **kw):
+        return super().add_row(*[tr(c) for c in cells], **kw)
+
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
  ██████╗  █████╗ ██████╗ ███╗   ██╗████████╗
@@ -196,17 +310,23 @@ DEFAULTS = {
         "cookie_pull_on_start": False,
         "presence_check": True,
         "timed_rejoin_min": 0,
+        "kill_all_on_drop": False,   # one instance drops -> rejoin every instance
+        "ban_check": True,           # poll Roblox for account restriction (alert + pause that instance)
+        "ban_check_min": 10,
+        "captcha_pause": True,       # Roblox asks Captcha/FaceID -> pause + alert, you solve it
+        "account_switch": False,     # swap in a spare cookie (cookie.txt lines beyond the instance count)
+        "rotate_min": 0,             # rotate accounts every N minutes (0 = off)
     },
     "heartbeat": {"enabled": True, "port": 8765, "interval": 15, "timeout": 90, "show_fps": True,
                   "fps_cap": {"default": 0, "accounts": {}}},   # accounts: {"<Roblox UserId>": {"name": ..., "cap": N}}; default 0 = leave FPS alone
     "autoexec": {"auto_create": True, "enabled_once": False, "filename": "heartbeat.lua",
-                 "arceus_added": False,
+                 "arceus_added": False, "extra_execs_added": False,
                  "dirs": ["/storage/emulated/0/Delta/Autoexecute",
                           "/storage/emulated/0/Arceus X/Autoexec"]},   # {pkg} in a path = one folder per clone
     "update": {"check": True, "hours": 6, "notified": ""},   # background version check; notified = last version already pushed to webhook
     "performance": {"low_cpu": True, "ui_refresh_sec": 2},
     "alert": {"enabled": True, "storm_count": 5, "storm_window_min": 60, "cooldown_min": 30, "low_ram_mb": 0},   # low_ram_mb 0 = use ram.min_free_mb
-    "ui": {"streamer_mode": True},   # hide account names on screen (first 4 chars + #)
+    "ui": {"streamer_mode": True, "lang": "th"},   # hide account names on screen (first 4 chars + #)
     "console_webhook": {"enabled": False, "url": "", "flush_sec": 10},   # blank url = reuse the main webhook
     "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False,
             "kill_others": False, "protect": ["termux", "magisk", "delta"]},
@@ -215,8 +335,12 @@ DEFAULTS = {
         "enabled": False,
         "send_screenshot": True,
         "periodic_min": 10,   # status report + screenshot every N minutes (0 = off)
-        "events": {"start": True, "crash": True, "rejoin": True, "stop": True, "status": True, "update": True, "alert": True},
+        "events": {"start": True, "crash": True, "rejoin": True, "stop": True, "status": True, "update": True, "alert": True,
+                   "ban": True, "captcha": True},
+        "ping": "",          # e.g. <@123456789> or @everyone, added to crash/alert/ban/captcha messages
+        "device_name": "",   # shown in the embed footer (handy with several phones)
     },
+    "remote": {"enabled": False, "bot_token": "", "chat_id": ""},   # your own Telegram bot for remote commands
 }
 
 
@@ -254,6 +378,12 @@ class Config:
             if ARCEUS_AUTOEXEC not in a["dirs"]:
                 a["dirs"].append(ARCEUS_AUTOEXEC)
             a["arceus_added"] = True
+        if not a.get("extra_execs_added"):
+            for x in EXTRA_EXEC_DIRS:
+                if x not in a["dirs"]:
+                    a["dirs"].append(x)
+            a["extra_execs_added"] = True
+        LANG["en"] = d["ui"].get("lang") == "en"
         return d
 
     def save(self):
@@ -899,9 +1029,105 @@ def store_cookies(cfg, found):
     return len(upd)
 
 
+def set_cookie_lines(upd):
+    """upd = {line_index: cookie or '-'}: write specific cookie lines in cookie.txt (comments kept, gaps padded with '-')."""
+    try:
+        with open(COOKIE_PATH, encoding="utf-8-sig") as f:
+            raw = f.read().splitlines()
+    except OSError:
+        raw = COOKIE_TEMPLATE.splitlines()
+    pos = [n for n, l in enumerate(raw) if l.strip() and not l.strip().startswith("#")]
+    for i in sorted(upd):
+        v = upd[i] or "-"
+        if i < len(pos):
+            raw[pos[i]] = v
+        else:
+            while len(pos) < i:
+                raw.append("-")
+                pos.append(len(raw) - 1)
+            raw.append(v)
+            pos.append(len(raw) - 1)
+    tmp = COOKIE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(raw) + "\n")
+    os.replace(tmp, COOKIE_PATH)
+    try:
+        os.chmod(COOKIE_PATH, 0o600)
+    except OSError:
+        pass
+    SECRETS.update(v for v in upd.values() if v and v != "-")
+
+
+def mod_status(s):
+    """Account restriction check (read-only: it only reports) -> "restricted" | "ok" | None (unknown)."""
+    try:
+        r = s.get("https://usermoderation.roblox.com/v2/not-approved", timeout=12)
+        if r.status_code == 200:
+            j = r.json() if r.text else {}
+            if isinstance(j, dict) and (j.get("restriction") is not None or j.get("source") is not None):
+                return "restricted"
+            return "ok"
+    except Exception:
+        pass
+    return None
+
+
+def join_challenge(s, place_id):
+    """Ask gamejoin for a join ticket and see whether Roblox demands a challenge (Captcha / FaceID / 2-step).
+    Detection only, nothing is solved here. -> challenge type ("" = none) or None when unknown."""
+    url = "https://gamejoin.roblox.com/v1/join-game"
+    try:
+        body = {"placeId": int(place_id), "gameJoinAttemptId": str(uuid.uuid4())}
+        r = s.post(url, json=body, timeout=12)
+        if r.status_code == 403 and "x-csrf-token" in r.headers and not r.headers.get("rblx-challenge-type"):
+            s.headers["X-CSRF-TOKEN"] = r.headers["x-csrf-token"]
+            r = s.post(url, json=body, timeout=12)
+        ch = r.headers.get("rblx-challenge-type", "")
+        if not ch:
+            try:
+                j = r.json()
+                ch = str(j.get("rblx-challenge-type", "")) if isinstance(j, dict) else ""
+            except ValueError:
+                ch = ""
+        return re.sub(r"[^\w\-]", "", ch)[:40]
+    except Exception:
+        return None
+
+
+def logout_package(pkg):
+    """Root only: force-stop the clone, then delete its WebView cookie DB and appStorage.json. -> (ok, message)"""
+    if not ENV.root:
+        return False, "ต้องใช้สิทธิ์รูท"
+    if not re.fullmatch(r"[\w.]+", pkg or ""):
+        return False, "ชื่อแพ็กเกจไม่ถูกต้อง"
+    q = shlex.quote
+    sh(AM() + " force-stop " + q(pkg), root=True, timeout=20)
+    path = find_cookie_db(pkg)
+    targets = [path, path + "-journal", path + "-wal", path + "-shm"] if path else []
+    targets.append("/data/data/%s/files/appData/LocalStorage/appStorage.json" % pkg)
+    for t in targets:
+        sh("rm -f " + q(t), root=True, timeout=15)
+    return True, ("ลบคุกกี้ในแอปและ appStorage แล้ว" if path else "ไม่พบฐานข้อมูลคุกกี้ (ลบ appStorage แล้ว)")
+
+
 # ----------------------------------------------------------------- discord webhook
 HOOK_RE = re.compile(r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+$")
-EV_COLOR = {"status": 0xF1C40F, "start": 0x2ECC71, "crash": 0xE74C3C, "rejoin": 0x3498DB, "stop": 0x95A5A6, "test": 0x9B59B6, "update": 0xF39C12, "alert": 0xE67E22}
+EV_COLOR = {"status": 0xF1C40F, "start": 0x2ECC71, "crash": 0xE74C3C, "rejoin": 0x3498DB, "stop": 0x95A5A6, "test": 0x9B59B6, "update": 0xF39C12, "alert": 0xE67E22,
+            "ban": 0xC0392B, "captcha": 0x8E44AD}
+
+PING_RE = re.compile(r"^(?:\s*(?:@everyone|@here|<@!?\d{5,25}>|<@&\d{5,25}>)){1,5}\s*$")
+PING_EVENTS = ("crash", "alert", "ban", "captcha")
+
+
+def webhook_footer(w):
+    dn = re.sub(r"[\r\n]", " ", str(w.get("device_name") or "")).strip()[:40]
+    return "GARNT TOOL REJOIN" + ((" • " + dn) if dn else "")
+
+
+def webhook_ping(w, event):
+    p = str(w.get("ping") or "").strip()
+    return p if (event in PING_EVENTS and p and PING_RE.match(p)) else ""
+
 
 
 class Hook:
@@ -915,11 +1141,15 @@ class Hook:
         if not w["url"]:
             return False
         embed = {"title": scrub(title), "description": scrub(desc), "color": EV_COLOR.get(event, 0),
-                 "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": "GARNT TOOL REJOIN"},
+                 "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": webhook_footer(w)},
                  "fields": [{"name": scrub(k), "value": scrub(v) or "-", "inline": True} for k, v in (fields or [])]}
         if shot and not (w["send_screenshot"] and os.path.exists(shot)):
             shot = None
-        args = (w["url"], {"username": "GARNT TOOL REJOIN", "embeds": [embed]}, shot)
+        payload = {"username": "GARNT TOOL REJOIN", "embeds": [embed]}
+        ping = webhook_ping(w, event)
+        if ping:
+            payload["content"] = ping
+        args = (w["url"], payload, shot)
         if sync:
             return self._post(*args)
         threading.Thread(target=self._post, args=args, daemon=True).start()
@@ -1367,6 +1597,63 @@ def report_autoexec(cfg, results, quiet_ok=True):
         say("เปิดใช้ heartbeat ให้แล้ว (ปิดได้ที่ เมนู 6 > Heartbeat > 1)", "cyan")
 
 
+CUSTOM_MARK = "-- GARNT custom script"
+
+
+def custom_targets(cfg):
+    out = []
+    for d, _ident in autoexec_targets(cfg):
+        if d in KNOWN_EXEC_DIRS and not os.path.isdir(os.path.dirname(d)):
+            continue                                   # executor not installed
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def _is_custom(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read(len(CUSTOM_MARK)) == CUSTOM_MARK
+    except OSError:
+        return False
+
+
+def install_custom_script(cfg, name, code):
+    """Write your own Lua script into every installed executor's autoexec folder. Files that weren't created by
+    this tool are never overwritten. -> [(path, created|updated|skipped|error...)]"""
+    if not re.fullmatch(r"[\w.\- ]{1,60}\.(?:lua|txt)", name or "") or name == cfg.d["autoexec"]["filename"]:
+        return [(name or "-", "error: ชื่อไฟล์ไม่ถูกต้อง (ใช้ .lua หรือ .txt และห้ามซ้ำ heartbeat)")]
+    body = CUSTOM_MARK + "\n" + code.replace("\r\n", "\n")
+    res = []
+    for d in custom_targets(cfg):
+        path = os.path.join(d, name)
+        try:
+            existed = os.path.exists(path)
+            if existed and not _is_custom(path):
+                res.append((path, "skipped"))
+                continue
+            os.makedirs(d, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(body)
+            res.append((path, "updated" if existed else "created"))
+        except OSError as e:
+            res.append((path, "error: %s" % e))
+    return res
+
+
+def remove_custom_script(cfg, name):
+    res = []
+    for d in custom_targets(cfg):
+        path = os.path.join(d, name)
+        if os.path.exists(path) and _is_custom(path):
+            try:
+                os.remove(path)
+                res.append((path, "removed"))
+            except OSError as e:
+                res.append((path, "error: %s" % e))
+    return res
+
+
 class Heartbeats:
     def __init__(self):
         self.lock = threading.Lock()
@@ -1621,6 +1908,9 @@ class Inst:
         self.started_at = time.time()
         self.fail_ts = deque(maxlen=50)   # timestamps of recent failures (for rejoin-storm alert)
         self.alert_at = 0.0
+        self.banned = self.bad_handled = False   # v2.1: moderation / dead-cookie handling flags
+        self.mod_at = self.chal_at = 0.0
+        self.acct_since = time.time()
 
 
 REASON = {"dead": "แอปปิด/ค้าง (ไม่พบโปรเซส)", "background": "แอปไม่ได้อยู่หน้าจอ",
@@ -1652,6 +1942,10 @@ class Engine:
         self.threads = []
         self.t0 = time.time()
         self.last_ram_alert = 0.0
+        self.swap_lock = threading.Lock()
+        self.bad_spares = set()
+        self.last_dropall = 0.0
+        self.remote = None
 
     # -- helpers
     def event(self, msg, style=""):
@@ -1675,9 +1969,15 @@ class Engine:
             t = threading.Thread(target=target, args=args, daemon=True)
             t.start()
             self.threads.append(t)
+        bot = RemoteBot(self.cfg, self)
+        if bot.start():
+            self.remote = bot
+            self.event("บอท Telegram ควบคุมระยะไกลทำงาน (/help)", "green")
 
     def shutdown(self):
         self.stop.set()
+        if self.remote:
+            self.remote.close()
         for i in self.insts:
             i.wake.set()
         for t in self.threads:
@@ -1697,9 +1997,20 @@ class Engine:
     # -- housekeeping: RAM clearing + periodic status report with screenshot
     def _housekeeper(self):
         c = self.cfg.d
-        last_ram = last_rep = time.time()
+        last_ram = last_rep = last_rot = time.time()
         while not self.stop.wait(self.HK_TICK):
             now = time.time()
+            try:
+                rm = int(c["auto"].get("rotate_min") or 0)
+            except (TypeError, ValueError):
+                rm = 0
+            if rm > 0 and ENV.root and now - last_rot >= rm * self.MIN:
+                last_rot = now
+                cand = [i for i in self.insts if i.cookie and not i.paused and i.state in ("ok", "unknown")]
+                if cand and self._spare_cookies():
+                    pick = min(cand, key=lambda i: i.acct_since)
+                    pick.cmd = "rotate"
+                    pick.wake.set()
             r = c["ram"]
             if r["enabled"] and ENV.root:
                 free = mem_available_mb()
@@ -1804,8 +2115,11 @@ class Engine:
         if cmd == "pause":
             inst.paused, inst.state, inst.detail = True, "paused", "หยุดชั่วคราวด้วยคำสั่ง (พิมพ์ resume)"
             self.event("%s: หยุดชั่วคราว" % inst.label, "yellow")
+        elif cmd == "rotate":
+            self._switch(inst, "rotate")
         elif cmd in ("rejoin", "resume"):
             inst.paused, inst.fails, inst.ok_since = False, 0, None
+            inst.chal_at = 0.0
             self.event("%s: รีจอยด้วยคำสั่ง" % inst.label, "cyan")
             self._launch(inst, "rejoin", force=True)
 
@@ -1976,6 +2290,8 @@ class Engine:
     def _tick(self, inst):
         c = self.cfg.d
         now = time.time()
+        if self._guard(inst):
+            return
         status, detail = self.check(inst)
         inst.detail = detail
         if status in ("ok", "unknown"):
@@ -2001,11 +2317,14 @@ class Engine:
         c = self.cfg.d
         inst.ok_since = None
         delay = 0
+        if reason != "timed" and self._challenge_pause(inst):
+            return
         if reason != "timed":
             inst.fails += 1
             delay = min(int(c["backoff_max"]), int(c["backoff_base"]) * 2 ** (inst.fails - 1))
             self.event("%s: %s (ครั้งที่ %d) รีจอยใน %ds" % (inst.label, REASON[reason], inst.fails, delay), "red")
             self._check_storm(inst)
+            self._drop_others(inst)
             shot = take_shot(inst.pkg) if c["auto"]["screenshot_on_crash"] else None
             self.hook.send("crash", "⚠️ หลุด/ค้าง", inst.label,
                            [("สาเหตุ", REASON[reason]), ("แพ็กเกจ", inst.pkg), ("บัญชี", inst.user or "-"),
@@ -2021,6 +2340,136 @@ class Engine:
                     inst.paused, inst.state, inst.detail = True, "paused", "หยุดชั่วคราวด้วยคำสั่ง (พิมพ์ resume)"
                     return
         self._launch(inst, "rejoin")
+
+    # -- v2.1: account moderation, cookie health, challenge pause, account switching, drop-all
+    def _guard(self, inst):
+        """Runs before each normal check. True = this tick is already handled (paused / switched)."""
+        if inst.cookie_bad and not inst.bad_handled:
+            inst.bad_handled = True
+            self.hook.send("alert", "🍪 คุกกี้หมดอายุ/ใช้ไม่ได้", inst.label,
+                           [("แพ็กเกจ", inst.pkg), ("บัญชี", inst.user or "-")])
+            if self._switch(inst, "cookie"):
+                return True
+        return self._moderation(inst)
+
+    def _moderation(self, inst):
+        a = self.cfg.d["auto"]
+        if not (a.get("ban_check") and inst.cookie) or inst.cookie_bad:
+            return False
+        now = time.time()
+        try:
+            gap = max(1, int(a.get("ban_check_min", 10))) * self.MIN
+        except (TypeError, ValueError):
+            gap = 10 * self.MIN
+        if now - inst.mod_at < gap:
+            return False
+        inst.mod_at = now
+        if inst.session is None:
+            inst.session = make_session(inst.cookie)
+        st = mod_status(inst.session)
+        if st == "ok":
+            inst.banned = False
+        elif st == "restricted" and not inst.banned:
+            inst.banned = True
+            self.event("%s: บัญชีถูกจำกัด/แบน/ถูกเตือน (ตรวจจาก Roblox)" % inst.label, "bold red")
+            self.hook.send("ban", "⛔ บัญชีถูกจำกัด/แบน/ถูกเตือน", inst.label,
+                           [("แพ็กเกจ", inst.pkg), ("บัญชี", inst.user or "-")])
+            if self._switch(inst, "banned"):
+                return True
+            inst.paused, inst.state = True, "paused"
+            inst.detail = "บัญชีถูกจำกัด/แบน หยุดรีจอยแล้ว (พิมพ์ resume %d ถ้าต้องการลองต่อ)" % inst.idx
+            return True
+        return False
+
+    def _challenge_pause(self, inst):
+        """Before rejoining a failing instance: does Roblox demand Captcha/FaceID for this account? Then pause it
+        and tell the owner (we never try to solve it)."""
+        if not (self.cfg.d["auto"].get("captcha_pause") and inst.cookie) or inst.cookie_bad:
+            return False
+        now = time.time()
+        if now - inst.chal_at < 300:
+            return False
+        inst.chal_at = now
+        pid = (parse_link(self.cfg.d["game_link"]) or ("", ""))[1]
+        if not pid.isdigit():
+            return False
+        if inst.session is None:
+            inst.session = make_session(inst.cookie)
+        ch = join_challenge(inst.session, pid)
+        if not ch:
+            return False
+        inst.paused, inst.state = True, "paused"
+        inst.detail = "Roblox ขอให้ยืนยันตัวตน (%s) ทำเองในแอป แล้วพิมพ์ resume %d" % (ch, inst.idx)
+        self.event("%s: ต้องยืนยัน %s หยุดรีจอยตัวนี้ไว้" % (inst.label, ch), "bold red")
+        self.hook.send("captcha", "🧩 ต้องยืนยัน Captcha/FaceID", inst.label,
+                       [("ชนิด", ch), ("แพ็กเกจ", inst.pkg), ("บัญชี", inst.user or "-")], take_shot(inst.pkg)
+                       if self.cfg.d["auto"]["screenshot_on_crash"] else None)
+        return True
+
+    def _spare_cookies(self):
+        """Cookie lines beyond the number of detected instances = spare accounts -> [(line_index, cookie)]"""
+        n = len(self.cfg.d["detected"])
+        return [(i, c) for i, c in enumerate(read_cookies()) if i >= n and c and c not in self.bad_spares]
+
+    def _switch(self, inst, why):
+        """Swap this instance onto the next usable spare account (root only). The old cookie goes to the spare slot."""
+        if not self.cfg.d["auto"].get("account_switch"):
+            return False
+        if not ENV.root:
+            self.event("%s: สลับบัญชีไม่ได้ (ต้องใช้รูท)" % inst.label, "yellow")
+            return False
+        det = self.cfg.d["detected"]
+        if inst.pkg not in det:
+            return False
+        li = det.index(inst.pkg)
+        with self.swap_lock:
+            running = {i.cookie for i in self.insts if i.cookie}
+            for si, ck in self._spare_cookies():
+                if ck in running:
+                    continue
+                s = make_session(ck)
+                uid, name, err = who_am_i(s)
+                if not uid or mod_status(s) == "restricted":
+                    self.bad_spares.add(ck)
+                    continue
+                if any(i.uid == uid for i in self.insts):
+                    continue
+                ok, msg = inject_cookie(inst.pkg, ck)
+                if not ok:
+                    self.event("%s: สลับบัญชีไม่สำเร็จ: %s" % (inst.label, msg), "red")
+                    return False
+                old = inst.cookie or ""
+                set_cookie_lines({li: ck, si: old or "-"})
+                if why != "rotate" and old:
+                    self.bad_spares.add(old)           # dead / banned cookie: don't try it again
+                inst.cookie, inst.session, inst.uid, inst.user = ck, s, uid, name
+                inst.cookie_bad = inst.banned = inst.bad_handled = False
+                inst.acct_since = time.time()
+                lbl = {"cookie": "คุกกี้ตาย", "banned": "บัญชีถูกแบน", "rotate": "หมุนเวียนตามเวลา"}.get(why, why)
+                self.event("%s: สลับไปบัญชี %s (%s)" % (inst.label, name, lbl), "bold cyan")
+                self.hook.send("rejoin", "🔀 สลับบัญชี", inst.label,
+                               [("สาเหตุ", lbl), ("บัญชีใหม่", name), ("แพ็กเกจ", inst.pkg)])
+                self._launch(inst, "rejoin", force=True)
+                return True
+        self.event("%s: ไม่มีบัญชีสำรองที่ใช้ได้ใน cookie.txt" % inst.label, "yellow")
+        return False
+
+    def _drop_others(self, inst):
+        """auto.kill_all_on_drop: one instance dropped -> rejoin the healthy ones too (2 min cooldown)."""
+        if not self.cfg.d["auto"].get("kill_all_on_drop") or len(self.insts) < 2:
+            return
+        now = time.time()
+        if now - self.last_dropall < 120:
+            return
+        self.last_dropall = now
+        hit = []
+        for o in self.insts:
+            if o is not inst and not o.paused and o.state in ("ok", "unknown"):
+                o.cmd = "rejoin"
+                o.wake.set()
+                hit.append(str(o.idx))
+        if hit:
+            self.event("%s หลุด → สั่งรีจอยอินสแตนซ์ %s ด้วย" % (inst.label, ", ".join(hit)), "yellow")
 
     # -- live panel
     def render(self, buf=None):
@@ -2057,9 +2506,117 @@ class Engine:
         return Group(*parts)
 
 
+# ----------------------------------------------------------------- Telegram remote control (your own bot)
+TG_TOKEN_RE = re.compile(r"^\d{5,15}:[\w-]{30,60}$")
+TG_CHAT_RE = re.compile(r"^-?\d{3,20}$")
+TG_HELP = ("/status — สถานะทุกอินสแตนซ์\n/rejoin <n|all> — รีจอยทันที\n/pause <n|all> — หยุดชั่วคราว\n"
+           "/resume <n|all> — เล่นต่อ\n/shot — แคปหน้าจอ (รูท)\n/ram — ล้างแรม (รูท)")
+
+
+class RemoteBot:
+    """Long-polls YOUR Telegram bot; only messages from the one allowed chat id are obeyed."""
+
+    def __init__(self, cfg, eng):
+        self.cfg, self.eng = cfg, eng
+        self.stop = threading.Event()
+        self.t0 = time.time()
+
+    @staticmethod
+    def api(token, method, data=None, files=None, timeout=35):
+        return requests.post("https://api.telegram.org/bot%s/%s" % (token, method), data=data, files=files, timeout=timeout)
+
+    def ready(self):
+        r = self.cfg.d["remote"]
+        return bool(r["enabled"] and TG_TOKEN_RE.match(str(r["bot_token"])) and TG_CHAT_RE.match(str(r["chat_id"])))
+
+    def start(self):
+        if not self.ready():
+            return False
+        SECRETS.add(self.cfg.d["remote"]["bot_token"])
+        threading.Thread(target=self._loop, daemon=True).start()
+        return True
+
+    def close(self):
+        self.stop.set()
+
+    def say(self, text):
+        r = self.cfg.d["remote"]
+        try:
+            RemoteBot.api(r["bot_token"], "sendMessage", {"chat_id": r["chat_id"], "text": hide_users(scrub(text))[:3500]})
+        except Exception as e:
+            log.debug("telegram send: %s", scrub(e))
+
+    def photo(self, path):
+        r = self.cfg.d["remote"]
+        try:
+            with open(path, "rb") as fh:
+                RemoteBot.api(r["bot_token"], "sendPhoto", {"chat_id": r["chat_id"]}, files={"photo": fh}, timeout=40)
+        except Exception as e:
+            log.debug("telegram photo: %s", scrub(e))
+
+    def _loop(self):
+        r = self.cfg.d["remote"]
+        offset = None
+        while not self.stop.is_set():
+            try:
+                j = RemoteBot.api(r["bot_token"], "getUpdates",
+                                  {"timeout": 25, "offset": offset, "allowed_updates": json.dumps(["message"])},
+                                  timeout=40).json()
+                if not j.get("ok"):
+                    log.warning("telegram: %s", scrub(str(j.get("description", ""))[:80]))
+                    self.stop.wait(15)
+                    continue
+                for u in j.get("result", []):
+                    offset = u["update_id"] + 1
+                    m = u.get("message") or {}
+                    if str((m.get("chat") or {}).get("id")) != str(r["chat_id"]):
+                        continue                                  # not the owner: ignore silently
+                    if m.get("date", 0) < self.t0 - 30:
+                        continue                                  # stale command from before we started
+                    out = self.handle(m.get("text") or "")
+                    if out:
+                        self.say(out)
+            except Exception as e:
+                log.debug("telegram loop: %s", scrub(e))
+                self.stop.wait(10)
+
+    def handle(self, text):
+        parts = text.strip().split()
+        if not parts or not parts[0].startswith("/"):
+            return None
+        cmd, args = parts[0][1:].split("@")[0].lower(), [a.lower() for a in parts[1:]]
+        e = self.eng
+        if cmd in ("start", "help"):
+            return TG_HELP
+        if cmd == "status":
+            return "\n".join("#%d %s | %s%s" % (i.idx, STATE_LABEL.get(i.state, (i.state,))[0], i.detail or "-",
+                                                (" | " + i.user) if i.user else "") for i in e.insts) or "-"
+        if cmd in ("rejoin", "pause", "resume"):
+            ts = e._targets(args[0]) if args else []
+            if not ts:
+                return "ใช้: /%s <เลขอินสแตนซ์|all>" % cmd
+            for i in ts:
+                i.cmd = cmd
+                i.wake.set()
+            e.event("รีโมต: %s อินสแตนซ์ %s" % (cmd, ", ".join(str(i.idx) for i in ts)), "cyan")
+            return "รับคำสั่ง %s: %s" % (cmd, ", ".join(str(i.idx) for i in ts))
+        if cmd in ("shot", "ram"):
+            if not ENV.root:
+                return "คำสั่งนี้ต้องใช้รูท"
+            if cmd == "ram":
+                threading.Thread(target=e._cmd_root, args=("ram",), daemon=True).start()
+                return "กำลังล้างแรม"
+            path = take_shot("remote")
+            if path:
+                self.photo(path)
+                return None
+            return "แคปหน้าจอไม่สำเร็จ"
+        return "ไม่รู้จักคำสั่ง (พิมพ์ /help)"
+
+
 # ----------------------------------------------------------------- ui helpers
 def T(s, style=""):
-    return Text(scrub(s), style=style)
+    return Text(scrub(tr(s)), style=style)
 
 
 def say(s="", style=""):
@@ -2068,14 +2625,14 @@ def say(s="", style=""):
 
 def ask(prompt, default=""):
     try:
-        v = console.input(Text(prompt + " ", style="bold yellow")).strip()
+        v = console.input(Text(tr(prompt) + " ", style="bold yellow")).strip()
     except EOFError:
         return default or "0"
     return v or default
 
 
 def confirm(prompt):
-    return ask(prompt + " (y/N)").lower() in ("y", "yes", "ใช่")
+    return ask(tr(prompt) + " (y/N)").lower() in ("y", "yes", "ใช่")
 
 
 def pause():
@@ -2083,7 +2640,7 @@ def pause():
 
 
 def onoff(v):
-    return Text("เปิด" if v else "ปิด", style="bold green" if v else "bold red")
+    return Text(tr("เปิด") if v else tr("ปิด"), style="bold green" if v else "bold red")
 
 
 def clear_screen():
@@ -2239,6 +2796,7 @@ def menu_settings(cfg):
         t.add_row("2", "ช่วงเวลาตรวจสอบ (วินาที)", str(cfg.d["check_interval"]))
         t.add_row("3", "หน่วงเวลาเปิดแต่ละอินสแตนซ์ (วินาที)", str(cfg.d["launch_delay"]))
         t.add_row("4", "ซ่อนชื่อบัญชี (streamer mode: โชว์ 4 ตัวแรก ที่เหลือเป็น #)", onoff(cfg.d["ui"]["streamer_mode"]))
+        t.add_row("5", "ภาษา / Language (ไทย/English)", "English" if LANG["en"] else "ไทย")
         console.print(t)
         if p:
             say("ลิงก์ที่ใช้เปิดจริง: " + p[0], "dim")
@@ -2255,6 +2813,10 @@ def menu_settings(cfg):
                 cfg.save()
         elif c == "4":
             cfg.d["ui"]["streamer_mode"] = STREAMER["on"] = not cfg.d["ui"]["streamer_mode"]
+            cfg.save()
+        elif c == "5":
+            LANG["en"] = not LANG["en"]
+            cfg.d["ui"]["lang"] = "en" if LANG["en"] else "th"
             cfg.save()
         elif c in ("2", "3"):
             key, lo = ("check_interval", 10) if c == "2" else ("launch_delay", 0)
@@ -2863,6 +3425,7 @@ def menu_cookie_hub(cfg):
             t.add_column(col)
         t.add_row("1", "ตรวจ / ใส่คุกกี้จาก cookie.txt ลงแอป (ล็อกอินด้วยคุกกี้)")
         t.add_row("2", "ดึงคุกกี้จากแอป Roblox มาเก็บใน cookie.txt (ไว้เช็คสถานะผ่าน API) — รูท")
+        t.add_row("3", "ล็อกเอาต์แพ็กเกจ (ลบคุกกี้ในแอป + appStorage) — รูท")
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
@@ -2871,6 +3434,8 @@ def menu_cookie_hub(cfg):
             menu_cookie(cfg)
         elif c == "2":
             menu_cookie_pull(cfg)
+        elif c == "3":
+            menu_logout(cfg)
 
 
 AUTO_ITEMS = [
@@ -2882,6 +3447,10 @@ AUTO_ITEMS = [
     ("cookie_login_on_start", "ล็อกอินด้วยคุกกี้อัตโนมัติก่อนเริ่ม", True),
     ("presence_check", "ตรวจสถานะในเกมผ่าน Roblox API (ต้องมีคุกกี้)", False),
     ("cookie_pull_on_start", "ดึงคุกกี้จากแอปมาเก็บอัตโนมัติก่อนเริ่ม (เฉพาะอินสแตนซ์ที่ยังไม่มีคุกกี้)", True),
+    ("kill_all_on_drop", "ถ้าหลุด 1 อินสแตนซ์ ให้รีจอยทุกอินสแตนซ์ด้วย", False),
+    ("ban_check", "ตรวจแบน/คำเตือนของบัญชีผ่าน Roblox API (แจ้งเตือน + หยุดตัวนั้น)", False),
+    ("captcha_pause", "หยุดรีจอยเมื่อ Roblox ขอ Captcha/FaceID (แจ้งให้ทำเอง)", False),
+    ("account_switch", "สลับไปใช้บัญชีสำรองจาก cookie.txt เมื่อคุกกี้ตาย/ถูกแบน", True),
 ]
 
 
@@ -3033,6 +3602,7 @@ def menu_heartbeat(cfg):
         t.add_row("8", "สร้าง/อัปเดต heartbeat.lua ตอนนี้", "")
         t.add_row("9", "แสดงตัวเลข FPS บนจอเกม (ลากได้ ไม่มีกรอบ ปรับขนาดตามจอ)", onoff(h["show_fps"]))
         t.add_row("10", "FPS cap ต่อบัญชี (ดึง Roblox ID จากคุกกี้) ...", T(fps_cap_summary(cfg)))
+        t.add_row("11", "นำเข้าสคริปต์ของคุณลง autoexec (วางโค้ด / ไฟล์ / ลิงก์)", "")
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
@@ -3071,6 +3641,8 @@ def menu_heartbeat(cfg):
                 pause()
         elif c == "10":
             menu_fps_cap(cfg)
+        elif c == "11":
+            menu_import_script(cfg)
         cfg.save()
 
 
@@ -3134,10 +3706,12 @@ def menu_perf(cfg):
 def menu_webhook(cfg, hook):
     w = cfg.d["webhook"]
     names = [("start", "เริ่มทำงาน"), ("crash", "หลุด/ค้าง"), ("rejoin", "รีจอยแล้ว"), ("stop", "หยุดทำงาน"),
-             ("status", "รายงานสถานะ+ภาพหน้าจอเป็นรอบ"), ("alert", "แจ้งเตือนผิดปกติ (รีจอยถี่/แรมต่ำ)")]
+             ("status", "รายงานสถานะ+ภาพหน้าจอเป็นรอบ"), ("alert", "แจ้งเตือนผิดปกติ (รีจอยถี่/แรมต่ำ)"),
+             ("ban", "บัญชีถูกจำกัด/แบน"), ("captcha", "ต้องยืนยัน Captcha/FaceID")]
     n_shot = 3 + len(names)
     n_per = n_shot + 1
     n_cu, n_ce, n_cf, n_ct, n_test = n_per + 1, n_per + 2, n_per + 3, n_per + 4, n_per + 5
+    n_ping, n_dev = n_per + 6, n_per + 7
     cw = cfg.d["console_webhook"]
     while True:
         banner(cfg)
@@ -3155,6 +3729,8 @@ def menu_webhook(cfg, hook):
         t.add_row(str(n_cf), "Console webhook: รวมส่งทุก (วินาที, 3-300)", str(cw["flush_sec"]))
         t.add_row(str(n_ct), "ทดสอบ Console webhook", "")
         t.add_row(str(n_test), "ส่งข้อความทดสอบ", "")
+        t.add_row(str(n_ping), "Ping ใน webhook (Discord ID หรือ @everyone / @here)", T(w.get("ping") or "(ว่าง)"))
+        t.add_row(str(n_dev), "ชื่ออุปกรณ์ (แสดงท้าย embed)", T(w.get("device_name") or "(ว่าง)"))
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
@@ -3200,6 +3776,19 @@ def menu_webhook(cfg, hook):
             elif v:
                 say("ต้องเป็นตัวเลข 3-300", "red")
                 pause()
+        elif c == str(n_ping):
+            v = ask("Discord User ID (ตัวเลข) หรือ @everyone / @here (Enter=ลบ):")
+            if not v:
+                w["ping"] = ""
+            else:
+                v = "<@%s>" % v if v.isdigit() else v
+                if PING_RE.match(v):
+                    w["ping"] = v
+                else:
+                    say("รูปแบบไม่ถูกต้อง", "red")
+                    pause()
+        elif c == str(n_dev):
+            w["device_name"] = re.sub(r"[\r\n]", " ", ask("ชื่ออุปกรณ์ (Enter=ลบ):"))[:40]
         elif c == str(n_ct):
             ch = ConsoleHook(cfg)
             if not ch.url():
@@ -3786,7 +4375,7 @@ def menu_tools(cfg):
         if c == "1":
             try:
                 say("สำรองแล้ว: " + export_config(cfg), "green")
-                say("ไฟล์นี้มี URL Webhook อยู่ ห้ามแชร์ให้ใคร (คุกกี้ไม่ได้อยู่ในไฟล์นี้)", "yellow")
+                say("ไฟล์นี้มี URL Webhook และ token บอท Telegram อยู่ ห้ามแชร์ให้ใคร (คุกกี้ไม่ได้อยู่ในไฟล์นี้)", "yellow")
             except OSError as e:
                 say("สำรองไม่ได้: %s" % scrub(e)[:80], "red")
             pause()
@@ -3828,11 +4417,157 @@ def menu_tools(cfg):
             menu_alert(cfg)
 
 
+def menu_logout(cfg):
+    if not ENV.root:
+        say("ล็อกเอาต์ต้องใช้สิทธิ์รูท", "red")
+        return pause()
+    det = cfg.d["detected"]
+    if not det:
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
+        return pause()
+    for i, p in enumerate(det, 1):
+        say("  %d) %s" % (i, p))
+    v = ask("เลือกแพ็กเกจที่จะล็อกเอาต์ เช่น 1,3 | all=ทั้งหมด | 0=ยกเลิก:").lower()
+    if v in ("", "0"):
+        return
+    idx = list(range(1, len(det) + 1)) if v == "all" else [int(x) for x in re.findall(r"\d+", v) if 0 < int(x) <= len(det)]
+    if not idx:
+        return pause()
+    pk = [det[i - 1] for i in sorted(set(idx))]
+    if not confirm("ล็อกเอาต์ %d แพ็กเกจ (แอปจะถูก force-stop และคุกกี้ในแอปถูกลบ)?" % len(pk)):
+        return
+    for p in pk:
+        ok, msg = logout_package(p)
+        say("%s: %s" % (p, msg), "green" if ok else "red")
+    say("ไฟล์ cookie.txt ไม่ถูกแก้ไข (ใส่คุกกี้กลับได้จากเมนูนี้ข้อ 1)", "dim")
+    pause()
+
+
+def menu_import_script(cfg):
+    say("นำเข้าสคริปต์ของคุณลงโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ทุกตัวที่ติดตั้งอยู่", "cyan")
+    say("  1) วางโค้ดเอง   2) อ่านจากไฟล์   3) ดาวน์โหลดจากลิงก์ https   4) ลบสคริปต์ที่นำเข้าไว้", "")
+    c = ask("เลือก (0=กลับ):")
+    if c == "0" or c not in ("1", "2", "3", "4"):
+        return
+    name = ask("ชื่อไฟล์ (.lua/.txt, Enter=custom.lua):", "custom.lua")
+    if c == "4":
+        res = remove_custom_script(cfg, name)
+        for path, st in res:
+            say("%s → %s" % (path, st), "green" if st == "removed" else "red")
+        if not res:
+            say("ไม่พบไฟล์ที่นำเข้าด้วยชื่อนี้ (ไฟล์ที่ไม่ใช่ของเครื่องมือจะไม่ถูกลบ)", "yellow")
+        return pause()
+    code = ""
+    if c == "1":
+        say("วางโค้ด แล้วพิมพ์ END ในบรรทัดใหม่เพื่อจบ", "dim")
+        lines = []
+        while True:
+            ln = ask("")
+            if ln.strip() == "END":
+                break
+            lines.append(ln)
+        code = "\n".join(lines)
+    elif c == "2":
+        p = ask("พาธไฟล์:")
+        try:
+            with open(os.path.expanduser(p), encoding="utf-8", errors="replace") as f:
+                code = f.read(1024 * 1024)
+        except OSError as e:
+            say("อ่านไฟล์ไม่ได้: %s" % scrub(e)[:80], "red")
+            return pause()
+    else:
+        u = ask("ลิงก์ https:")
+        if not u.lower().startswith("https://"):
+            say("รองรับเฉพาะลิงก์ https", "red")
+            return pause()
+        try:
+            r = requests.get(u, timeout=20)
+            r.raise_for_status()
+            code = r.text[:1024 * 1024]
+        except Exception as e:
+            say("ดาวน์โหลดไม่สำเร็จ: %s" % scrub(e)[:80], "red")
+            return pause()
+        say("ตรวจโค้ดที่ดาวน์โหลดมาให้แน่ใจก่อนใช้ (สคริปต์จะรันในเกมของทุกบัญชี)", "yellow")
+    if not code.strip():
+        say("ไม่มีโค้ด", "red")
+        return pause()
+    names = {"created": "สร้างแล้ว", "updated": "อัปเดตแล้ว", "skipped": "ข้าม (มีไฟล์ชื่อนี้ที่ไม่ใช่ของเครื่องมือ)"}
+    res = install_custom_script(cfg, name, code)
+    for path, st in res:
+        say("%s → %s" % (path, names.get(st, st)), "red" if st.startswith("error") else "green" if st != "skipped" else "yellow")
+    if not res:
+        say("ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ที่ติดตั้งอยู่ (ตั้งที่ เมนู 6 > Heartbeat > 6)", "yellow")
+    pause()
+
+
+def menu_extra(cfg):
+    a, r = cfg.d["auto"], cfg.d["remote"]
+    while True:
+        banner(cfg)
+        spare = len([1 for i, c in enumerate(read_cookies()) if i >= len(cfg.d["detected"]) and c])
+        tok = r["bot_token"]
+        t = Table(title="ฟีเจอร์เสริม", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "รายการ", "ค่า"):
+            t.add_column(col)
+        t.add_row("1", "ตรวจแบน/คำเตือนทุกกี่นาที", str(a["ban_check_min"]))
+        t.add_row("2", "สลับบัญชีตามเวลา (นาที, 0=ปิด) ใช้บัญชีสำรองใน cookie.txt", str(a["rotate_min"]))
+        t.add_row("3", "บัญชีสำรองใน cookie.txt (บรรทัดที่เกินจำนวนอินสแตนซ์)", str(spare))
+        t.add_row("4", "บอท Telegram ควบคุมระยะไกล", onoff(r["enabled"]))
+        t.add_row("5", "Bot token", (tok[:6] + "…" + tok[-4:]) if tok else "(ยังไม่ตั้ง)")
+        t.add_row("6", "Chat ID ที่อนุญาต", str(r["chat_id"]) or "(ยังไม่ตั้ง)")
+        t.add_row("7", "ทดสอบบอท", "")
+        console.print(t)
+        say("ตัวเปิด/ปิดฟีเจอร์ตรวจแบน, หยุดเมื่อเจอ Captcha, สลับบัญชี, รีจอยทุกตัวเมื่อหลุด อยู่ที่ เมนู 6", "dim")
+        c = ask("เลือกหมายเลข (0=กลับ)")
+        if c == "0":
+            return
+        if c in ("1", "2"):
+            key, lo, hi = ("ban_check_min", 1, 1440) if c == "1" else ("rotate_min", 0, 10080)
+            v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
+            if v.isdigit() and lo <= int(v) <= hi:
+                a[key] = int(v)
+            elif v:
+                say("ค่าต้องอยู่ระหว่าง %d-%d" % (lo, hi), "red")
+                pause()
+        elif c == "4":
+            r["enabled"] = not r["enabled"]
+        elif c == "5":
+            v = ask("วาง Bot token จาก @BotFather (Enter=ลบ):")
+            if not v:
+                r["bot_token"], r["enabled"] = "", False
+            elif TG_TOKEN_RE.match(v):
+                r["bot_token"] = v
+                SECRETS.add(v)
+            else:
+                say("รูปแบบ token ไม่ถูกต้อง", "red")
+                pause()
+        elif c == "6":
+            v = ask("Chat ID ของคุณ (ตัวเลข, ส่งข้อความหาบอท @userinfobot เพื่อดู):")
+            if TG_CHAT_RE.match(v):
+                r["chat_id"] = v
+            elif v:
+                say("ต้องเป็นตัวเลข", "red")
+                pause()
+        elif c == "7":
+            if not (TG_TOKEN_RE.match(str(r["bot_token"])) and TG_CHAT_RE.match(str(r["chat_id"]))):
+                say("ตั้ง token และ Chat ID ก่อน", "red")
+            else:
+                try:
+                    ok = RemoteBot.api(r["bot_token"], "sendMessage", {"chat_id": r["chat_id"],
+                                       "text": "GARNT TOOL REJOIN: ทดสอบบอท ✅\n" + TG_HELP}, timeout=20).status_code == 200
+                except Exception:
+                    ok = False
+                say("ส่งสำเร็จ" if ok else "ส่งไม่สำเร็จ ตรวจสอบ token / Chat ID (ต้องกด Start กับบอทก่อน)", "green" if ok else "red")
+            pause()
+        cfg.save()
+
+
 MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2", "แสดงอินสแตนซ์ / สถานะ"),
         ("3", "ตั้งค่า (ลิงก์เกม, ช่วงเวลาตรวจสอบ, หน่วงการเปิด)"), ("4", "สแกนแพ็กเกจ"),
-        ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
+        ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox / ล็อกเอาต์)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
         ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("11", "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)"),
-        ("12", "เทสเครื่อง Cloud Phone (CPU / RAM / GPU)"), ("13", "สำรอง/กู้ค่า + ดู log + แจ้งเตือนผิดปกติ"), ("0", "ออก")]
+        ("12", "เทสเครื่อง Cloud Phone (CPU / RAM / GPU)"), ("13", "สำรอง/กู้ค่า + ดู log + แจ้งเตือนผิดปกติ"),
+        ("14", "ฟีเจอร์เสริม (บอท Telegram / ตรวจแบน / สลับบัญชี)"), ("0", "ออก")]
 
 
 def ensure_java():
@@ -3859,6 +4594,7 @@ def main():
     detect_root()
     cfg = Config()
     STREAMER["on"] = bool(cfg.d["ui"]["streamer_mode"])
+    LANG["en"] = cfg.d["ui"].get("lang") == "en"
     setup_logging()
     ensure_java()
     hook = Hook(cfg)
@@ -3881,7 +4617,7 @@ def main():
     while True:
         banner(cfg)
         for k, label in MENU:
-            console.print(Text.assemble(("  [%s] " % k, "bold cyan"), (label, "bold" if k != "0" else "red")))
+            console.print(Text.assemble(("  [%s] " % k, "bold cyan"), (tr(label), "bold" if k != "0" else "red")))
         console.print()
         c = ask("เลือกเมนู:")
         if c == "1":
@@ -3910,6 +4646,8 @@ def main():
             menu_bench(cfg)
         elif c == "13":
             menu_tools(cfg)
+        elif c == "14":
+            menu_extra(cfg)
         elif c == "0":
             say("ลาก่อน!", "cyan")
             return
