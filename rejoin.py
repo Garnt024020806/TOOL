@@ -580,7 +580,7 @@ RAM_LAST = {"detail": ""}
 DROP = {"ok": None}   # None = not probed yet
 
 
-KEEP_PKGS = ["com.roblox.clienuU", "com.roblox.clienuV", "com.roblox.clienuW", "com.roblox.clienuX", "com.roblox.clienuY", "com.roblox.clienuZ", "com.termux", "com.android.systemui", "com.topjohnwu.magisk", "ahapps.controlthescreenorientation"]
+KEEP_PKGS = ["com.roblox.clienuU", "com.roblox.clienuV", "com.roblox.clienuW", "com.roblox.clienuX", "com.roblox.clienuY", "com.roblox.clienuZ", "com.termux", "com.termux.window", "com.android.systemui", "com.topjohnwu.magisk", "ahapps.controlthescreenorientation"]
 
 
 def kill_others(cfg):
