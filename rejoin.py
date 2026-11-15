@@ -47,7 +47,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "2.2"
+VERSION = "2.3"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
 EXTRA_EXEC_DIRS = (
@@ -605,6 +605,22 @@ def kill_others(cfg):
     return victims, ps_ok
 
 
+def kill_cached_safe(cfg):
+    """Root only. Replacement for `am kill-all` (which has no exclusions and also kills Termux when it sits in the
+    background): `am kill <pkg>` per user app, which only ends BACKGROUND processes and skips every protected app
+    (Termux + add-ons, root managers, the Roblox clones, the launcher, ram.protect). -> list of packages touched."""
+    r = cfg.d["ram"]
+    _, o3 = sh("pm list packages -3", root=True, timeout=30)
+    third = {l.split(":", 1)[1].strip() for l in o3.splitlines() if l.startswith("package:")}
+    prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [x.lower() for x in prefixes(cfg)] + [
+        "termux", "magisk", "kernelsu", "supersu", "controlthescreenorientation"])
+    keep = set(cfg.d["detected"]) | set(KEEP_PKGS) | {home_pkg()}
+    victims = [p for p in sorted(third) if p not in keep and not any(x in p.lower() for x in prot)][:80]
+    if victims:
+        sh("; ".join(AM() + " kill " + shlex.quote(p) for p in victims), root=True, timeout=60)
+    return victims
+
+
 def drop_ram(kill_cached=False, cfg=None):
     """Root only. Drop page cache (and optionally kill cached background apps).
     -> (ok, before_mb, after_mb); a per-step report is left in RAM_LAST["detail"]."""
@@ -625,9 +641,12 @@ def drop_ram(kill_cached=False, cfg=None):
             steps.append(("drop_caches", False, "denied, skipped from now on"))
         else:
             steps.append(("drop_caches", True, ""))
-    if kill_cached:
-        rc, out = sh(AM() + " kill-all", root=True, timeout=30)
-        steps.append(("kill-all", rc == 0, "" if rc == 0 else "failed"))
+    if kill_cached and cfg is not None:                # never a global `am kill-all`: it would also kill Termux
+        try:
+            v = kill_cached_safe(cfg)
+            steps.append(("kill-cached", True, ("background-only kill: %d apps" % len(v)) if v else "nothing to close"))
+        except Exception as e:
+            steps.append(("kill-cached", False, "failed (%s)" % type(e).__name__))
     if cfg is not None and cfg.d["ram"]["kill_others"]:
         try:
             v, ps_ok = kill_others(cfg)
@@ -3658,7 +3677,7 @@ def menu_perf(cfg):
         t.add_row("1", "ล้างแรมอัตโนมัติ (เฉพาะรูท)", onoff(r["enabled"]))
         t.add_row("2", "ล้างแรมทุก (นาที, 0=ไม่ล้างตามเวลา)", str(r["interval_min"]))
         t.add_row("3", "ล้างเมื่อแรมว่างต่ำกว่า (MB, 0=ปิด)", str(r["min_free_mb"]))
-        t.add_row("4", "ปิดแอปพื้นหลังที่ cached ด้วย (am kill-all) ⚠ อาจปิดโคลนที่อยู่เบื้องหลัง", onoff(r["kill_cached"]))
+        t.add_row("4", "ปิดแอปพื้นหลังที่ cached (am kill รายแอป เฉพาะแอปที่ไม่ได้ป้องกัน ไม่แตะ Termux/โคลน)", onoff(r["kill_cached"]))
         t.add_row("5", "ปิดแอปอื่นที่ไม่เกี่ยวข้องแบบปลอดภัย (force-stop แอปที่ติดตั้งเอง เว้น Roblox/Termux/Delta และรายชื่อข้อ 6)", onoff(r["kill_others"]))
         t.add_row("6", "รายชื่อแอปที่ห้ามปิด (ส่วนของชื่อแพ็กเกจ)", ", ".join(r["protect"]))
         t.add_row("7", "โหมดประหยัด CPU (ลดความสำคัญโปรเซส, เก็บสถานะเกมไว้ 60 วินาที, รีเฟรชจอช้าลง)", onoff(p["low_cpu"]))
