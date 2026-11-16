@@ -47,7 +47,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "2.4"
+VERSION = "2.6"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
 EXTRA_EXEC_DIRS = (
@@ -290,6 +290,7 @@ DEFAULTS = {
     "game_link": "",
     "check_interval": 30,
     "launch_delay": 15,
+    "friend_gap_sec": 8,   # เพิ่มเพื่อน (เมนู 8 ข้อ 4): เว้นอย่างน้อยกี่วินาทีระหว่างสองคำขอจากบัญชีเดียวกัน (กัน HTTP 429)
     "block_gap_sec": 20,   # social menu item 5: min seconds between two blocks from the SAME account (Roblox ~3/min per cookie)
     "open_all_delay": 10,   # main menu 9: seconds between opening each Roblox instance
     "package_prefix": "com.roblox.",
@@ -300,6 +301,7 @@ DEFAULTS = {
     "backoff_max": 300,
     "stable_reset": 300,
     "join_grace": 90,
+    "proc_wait": 20,   # ไม่เจอโปรเซส: รอเช็ก API/heartbeat อีกกี่วินาทีก่อนสั่งรีจอย
     "auto": {
         "start_on_launch": False,
         "wake_lock": True,
@@ -318,6 +320,7 @@ DEFAULTS = {
         "rotate_min": 0,             # rotate accounts every N minutes (0 = off)
     },
     "heartbeat": {"enabled": True, "port": 8765, "interval": 15, "timeout": 90, "show_fps": True,
+                  "seq_wait": 180,   # เช็ก heartbeat ทีละบัญชี: รอแต่ละบัญชีนานสุดกี่วินาที ไม่เจอ = รีจอยแล้วไปบัญชีถัดไป
                   "fps_cap": {"default": 0, "accounts": {}}},   # accounts: {"<Roblox UserId>": {"name": ..., "cap": N}}; default 0 = leave FPS alone
     "autoexec": {"auto_create": True, "enabled_once": False, "filename": "heartbeat.lua",
                  "arceus_added": False, "extra_execs_added": False,
@@ -1950,6 +1953,8 @@ class Inst:
         self.banned = self.bad_handled = False   # v2.1: moderation / dead-cookie handling flags
         self.mod_at = self.chal_at = 0.0
         self.acct_since = time.time()
+        self.proc_miss_at = 0.0                  # เวลาที่เริ่มไม่เจอโปรเซส (0 = เจอปกติ)
+        self.hb_seen, self.hb_miss, self.hb_warned = False, 0, False   # สถานะการไล่เช็ก heartbeat
 
 
 REASON = {"dead": "แอปปิด/ค้าง (ไม่พบโปรเซส)", "background": "แอปไม่ได้อยู่หน้าจอ",
@@ -1999,12 +2004,13 @@ class Engine:
         return max(10, int(self.cfg.d["check_interval"]))
 
     def start(self):
+        """เริ่มเธรดตรวจของแต่ละอินสแตนซ์ + housekeeper + ตัวไล่เช็ก heartbeat + บอท Telegram"""
         self.event("เริ่มทำงาน %d อินสแตนซ์ (โหมด %s)" % (len(self.insts), "ROOT" if ENV.root else "ไม่รูท"), "green")
         self.hook.send("start", "▶️ เริ่มรีจอยอัตโนมัติ", "เริ่มจัดการ %d อินสแตนซ์" % len(self.insts),
                        [("โหมด", "ROOT" if ENV.root else "ไม่รูท"), ("ตรวจทุก", "%ds" % self.interval()),
                         ("แพ็กเกจ", ", ".join(i.pkg for i in self.insts))])
         SNAP["fg"] = bool(ENV.root and (self.cfg.d["auto"]["foreground_check"]))
-        for target, args in [(self._worker, (i,)) for i in self.insts] + [(self._housekeeper, ())]:
+        for target, args in [(self._worker, (i,)) for i in self.insts] + [(self._housekeeper, ()), (self._hb_sequencer, ())]:
             t = threading.Thread(target=target, args=args, daemon=True)
             t.start()
             self.threads.append(t)
@@ -2150,12 +2156,15 @@ class Engine:
         return cmd
 
     def _manual(self, inst):
+        """ทำคำสั่งที่ค้างอยู่ของอินสแตนซ์ (pause / rotate / rejoin / resume / hbfail จากตัวไล่เช็ก heartbeat)"""
         cmd = self._take_cmd(inst)
         if cmd == "pause":
             inst.paused, inst.state, inst.detail = True, "paused", "หยุดชั่วคราวด้วยคำสั่ง (พิมพ์ resume)"
             self.event("%s: หยุดชั่วคราว" % inst.label, "yellow")
         elif cmd == "rotate":
             self._switch(inst, "rotate")
+        elif cmd == "hbfail":
+            self._recover(inst, "noheartbeat")
         elif cmd in ("rejoin", "resume"):
             inst.paused, inst.fails, inst.ok_since = False, 0, None
             inst.chal_at = 0.0
@@ -2239,6 +2248,7 @@ class Engine:
         inst.state = "stopped"
 
     def _launch(self, inst, kind, force=False):
+        """เปิดเกมให้อินสแตนซ์ (รอคิวตาม launch_delay) แล้วรีเซ็ตตัวนับสถานะของรอบใหม่"""
         c = self.cfg.d
         inst.state, inst.detail = "queued", "รอคิวเปิดแอป"
         with self.gate:
@@ -2252,6 +2262,7 @@ class Engine:
             self.last_launch = time.time()
         inst.launched_at = time.time()
         inst.pres_at = 0.0
+        inst.proc_miss_at = 0.0
         inst.state, inst.detail = "joining", "รอเข้าเกม"
         if not ok:
             self.event("%s: เปิดเกมไม่สำเร็จ: %s" % (inst.label, msg), "red")
@@ -2304,35 +2315,119 @@ class Engine:
             return "ok", "heartbeat %ds ก่อน%s%s" % (age, who, (" | FPS " + rec["fps"] + cap_txt(rec)) if rec.get("fps") else "")
         return "stale", "ไม่มี heartbeat มา %ds%s" % (age, who)
 
+    def _hb_age(self, inst):
+        """อายุ (วินาที) ของ heartbeat ล่าสุดที่มาหลังเปิดเกมรอบนี้ ถ้ายังไม่มี/ปิดใช้ heartbeat = None"""
+        if not (self.cfg.d["heartbeat"]["enabled"] and self.hb):
+            return None
+        rec = self.hb.latest(inst)
+        if rec is None or rec["ts"] < inst.launched_at:
+            return None
+        return time.time() - rec["ts"]
+
+    def _hb_fresh(self, inst):
+        """True ถ้า heartbeat มาใหม่ (ไม่เกิน 2 รอบส่ง) และไม่มี error Disconnected แนบมา"""
+        age = self._hb_age(inst)
+        if age is None:
+            return False
+        rec = self.hb.latest(inst)
+        gap = 2 * int(self.cfg.d["heartbeat"]["interval"]) + 5
+        return age <= gap and not rec.get("err")
+
     def check(self, inst):
+        """ลำดับเช็กว่ายังออนอยู่: 1) process  2) หน้าจอ  3) Roblox API  4) heartbeat (error Disconnected)
+        ถ้าไม่เจอ process จะไม่สั่งรีทันที: รอเช็ก API/heartbeat ก่อน (proc_wait วินาที) ถ้ายังไม่มีสัญญาณถึงค่อยถือว่า dead
+        การหายของ heartbeat ไม่ตัดสินที่นี่ แต่ตัดสินใน _hb_sequencer (ไล่ทีละบัญชี)"""
+        now = time.time()
         alive = proc_alive(inst.pkg)
-        if ENV.root and not alive:
+        if alive:
+            inst.proc_miss_at = 0.0
+        elif ENV.root:
+            pres = self.presence(inst)                       # ไม่เจอโปรเซส: ถามอย่างอื่นก่อน
+            if pres is True or self._hb_fresh(inst):
+                inst.proc_miss_at = 0.0
+                return "ok", "ไม่พบโปรเซส แต่ยังมีสัญญาณ (%s)" % ("API" if pres is True else "heartbeat")
+            if not inst.proc_miss_at:
+                inst.proc_miss_at = now
+            left = int(self.cfg.d.get("proc_wait", 20)) - (now - inst.proc_miss_at)
+            if left > 0:
+                return "procwait", "ไม่พบโปรเซส รอเช็ก API/heartbeat อีก %ds" % left
             return "dead", REASON["dead"]
         if ENV.root and alive and self.cfg.d["auto"]["foreground_check"]:
             if (inst.pkg + "/") not in foreground_text():
                 return "background", REASON["background"]
-        hs = self.hb_state(inst)
-        if hs:
-            if hs[0] == "err":
-                return "disconnected", hs[1]
-            return ("ok", hs[1]) if hs[0] == "ok" else ("noheartbeat", hs[1])
-        pres = self.presence(inst)
+        pres = self.presence(inst)                           # ขั้น API
         who = (" [%s]" % inst.user) if inst.user else ""
+        hs = self.hb_state(inst)                             # ขั้น heartbeat (เฉพาะดู Disconnected / ข้อมูลแสดงผล)
+        if hs and hs[0] == "err":
+            return "disconnected", hs[1]
         if pres is True:
             return "ok", "อยู่ในเกม" + who
         if pres is False:
+            if self._hb_fresh(inst):
+                return "ok", "heartbeat ยังส่ง (API ว่าไม่อยู่ในเกม อาจดีเลย์)" + who
             return "notingame", REASON["notingame"] + who
+        if hs and hs[0] == "ok":
+            return "ok", hs[1]
         if alive:
             return "ok", "แอปทำงานอยู่ (ไม่มีข้อมูลสถานะเกม)"
         return "unknown", "ไม่ทราบสถานะ (ไม่รูท/ไม่มีคุกกี้)"
 
+    def _hb_sequencer(self):
+        """ไล่เช็ก heartbeat ทีละบัญชีตามลำดับ (บัญชี 1 → 2 → ...) แล้ววนซ้ำ เจอแล้วข้ามไปบัญชีถัดไปทันที"""
+        while not self.stop.is_set():
+            if self.cfg.d["heartbeat"]["enabled"] and self.hb:
+                for inst in list(self.insts):
+                    if self.stop.is_set():
+                        return
+                    try:
+                        self._hb_wait_one(inst)
+                    except Exception as e:
+                        self.event("%s: ตรวจ heartbeat ผิดพลาด %s" % (inst.label, e), "red")
+            if self.stop.wait(self.interval()):
+                return
+
+    def _hb_wait_one(self, inst):
+        """รอ heartbeat ของบัญชีเดียวนานสุด seq_wait วินาที เจอ = จบ ไม่เจอ = สั่ง worker รีจอย (cmd hbfail) แล้วจบ"""
+        try:
+            wait = max(30, int(self.cfg.d["heartbeat"].get("seq_wait", 180)))
+        except (TypeError, ValueError):
+            wait = 180
+        busy = ("queued", "launching", "backoff", "paused", "stopped")   # worker กำลังจัดการอยู่ ข้ามไปก่อน
+        launched, t_end = inst.launched_at, time.time() + wait
+        while True:
+            if self.stop.is_set() or inst.paused or inst.state in busy or inst.proc_miss_at:
+                return
+            if inst.launched_at != launched:             # ถูกเปิดใหม่ระหว่างรอ: เริ่มนับ 180 วินาทีใหม่
+                launched, t_end = inst.launched_at, time.time() + wait
+            if self._hb_fresh(inst):
+                inst.hb_seen, inst.hb_miss = True, 0
+                return
+            if time.time() >= t_end:
+                break
+            if self.stop.wait(2):
+                return
+        if not inst.hb_seen:                             # ไม่เคยได้ heartbeat จากตัวนี้เลย: อาจยังไม่ได้ลงสคริปต์
+            inst.hb_miss += 1
+            if inst.hb_miss >= 2:
+                if not inst.hb_warned:
+                    inst.hb_warned = True
+                    self.event("%s: ไม่เคยได้ heartbeat เลย หยุดรีจอยเพราะ heartbeat (ตรวจว่าลงสคริปต์แล้ว/ID ตรงกัน)" % inst.label, "yellow")
+                return
+        self.event("%s: ไม่เจอ heartbeat ใน %ds → รีจอย แล้วไปบัญชีถัดไป" % (inst.label, wait), "yellow")
+        inst.cmd = "hbfail"
+        inst.wake.set()
+
     def _tick(self, inst):
+        """ตรวจสถานะหนึ่งรอบ แล้วตัดสินใจว่าปกติ / รอ / ต้องรีจอย"""
         c = self.cfg.d
         now = time.time()
         if self._guard(inst):
             return
         status, detail = self.check(inst)
         inst.detail = detail
+        if status == "procwait":                         # ไม่เจอโปรเซส: ยังไม่สั่งรี รอเช็กรอบหน้า
+            inst.state, inst.ok_since = "unknown", None
+            return
         if status in ("ok", "unknown"):
             inst.state = status
             if inst.ok_since is None:
@@ -3041,7 +3136,7 @@ def is_blocking(s, tid):
 
 def social_call(s, action, tid, uid=0):
     """บล็อก/เลิกบล็อก/เพื่อน -> (ok, ข้อความ) ใช้ user-blocking-api ก่อน ถ้าได้ 404 ค่อยลอง URL เก่า"""
-    body = {} if action != "friend" else None
+    body = {}          # ต้องส่ง JSON เสมอ (body ว่างทำให้ friends API ตอบ 415 UnsupportedMediaType)
     web = "apis.roblox.com" in SOCIAL_URL[action]
     if web:
         ensure_tracker(s, uid)
@@ -3063,6 +3158,24 @@ def social_call(s, action, tid, uid=0):
             return True, msg2
         msg += " / " + msg2
     return ok, msg
+
+
+def friend_post(s, url, last, gap, tries=4):
+    """api_post สำหรับเพื่อน: เว้นช่วงต่อบัญชี (last = {id(session): เวลาส่งล่าสุด}) และถ้าโดน 429 จะรอแล้วลองใหม่"""
+    msg = ""
+    for k in range(tries):
+        wait = last.get(id(s), 0.0) + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        ok, msg = api_post(s, url, {})                   # ส่ง {} ไม่ใช่ None เพื่อให้มี Content-Type: application/json
+        last[id(s)] = time.time()
+        if ok or not msg.startswith("HTTP 429"):
+            return ok, msg
+        if k < tries - 1:
+            w = 30 * (k + 1)
+            say("โดนจำกัดความถี่ (429) รอ %d วินาทีแล้วลองใหม่..." % w, "yellow")
+            time.sleep(w)
+    return False, msg
 
 
 def social_accounts(cfg):
@@ -3417,15 +3530,21 @@ def menu_social(cfg):
             if not confirm("เพิ่มเพื่อนระหว่าง %d บัญชี?" % len(sel)):
                 continue
             rows = []
+            seen = set()
+            sel = [a for a in sel if not (a[2] in seen or seen.add(a[2]))]   # คุกกี้ของบัญชีเดียวกันนับครั้งเดียว
+            try:
+                gap = max(0, int(cfg.d.get("friend_gap_sec", 8)))
+            except (TypeError, ValueError):
+                gap = 8
+            last = {}
             for i in range(len(sel)):
                 for j in range(i + 1, len(sel)):
                     (p1, s1, u1, n1), (p2, s2, u2, n2) = sel[i], sel[j]
-                    ok, msg = api_post(s1, SOCIAL_URL["friend"] % u2)
-                    time.sleep(1.5)
+                    ok, msg = friend_post(s1, SOCIAL_URL["friend"] % u2, last, gap)
                     if ok:
-                        ok, msg = api_post(s2, SOCIAL_URL["accept"] % u1, {})
-                        time.sleep(1.5)
+                        ok, msg = friend_post(s2, SOCIAL_URL["accept"] % u1, last, gap)
                     rows.append((p1 + " ↔ " + p2, hide_name(n1) + " ↔ " + hide_name(n2), ok, msg))
+                    say("%s ↔ %s: %s" % (p1, p2, ("✓ " if ok else "✗ ") + msg), "green" if ok else "red")
             show_social(rows)
             pause()
 
@@ -3549,6 +3668,35 @@ def read_cap(prompt, allow_zero=False):
     return False, None
 
 
+def fps_accounts(cfg):
+    """รายชื่อบัญชีสำหรับตั้ง FPS cap -> [(pkg, session, uid, name)]
+    รูท: ดึงคุกกี้จากแอป Roblox ของทุกอินสแตนซ์ที่ตรวจพบ (ไม่จำกัดเฉพาะตัวที่ inject จาก cookie.txt) ไม่เขียนทับ cookie.txt
+    แพ็กเกจที่ดึงไม่ได้ (หรือไม่รูท) จะถอยไปใช้คุกกี้ใน cookie.txt ถ้ามี"""
+    det = cfg.d["detected"]
+    txt = dict(cookie_pairs(cfg)[0])
+    pulled = {}
+    if ENV.root:
+        for pkg, ck, name, msg in pull_validated(det):
+            if ck:
+                pulled[pkg] = ck
+            else:
+                say("%s: ดึงคุกกี้จากแอปไม่ได้ (%s)" % (pkg, msg), "yellow")
+    else:
+        say("ไม่รูท: ดึงคุกกี้จากแอปไม่ได้ ใช้เฉพาะคุกกี้ใน cookie.txt", "yellow")
+    out = []
+    for pkg in det:
+        ck = pulled.get(pkg) or txt.get(pkg)
+        if not ck:
+            continue
+        s = make_session(ck)
+        uid, name, err = who_am_i(s)
+        if uid:
+            out.append((pkg, s, uid, name))
+        else:
+            say("%s: คุกกี้ใช้ไม่ได้ (%s)" % (pkg, err), "red")
+    return out
+
+
 def menu_fps_cap(cfg):
     """Per-account FPS cap. The account is identified by its Roblox user ID (fetched from the cookie),
     and the generated heartbeat.lua looks the ID up in-game, so it follows the account, not the clone."""
@@ -3556,12 +3704,13 @@ def menu_fps_cap(cfg):
     fc.setdefault("default", 0)
     if not isinstance(fc.get("accounts"), dict):
         fc["accounts"] = {}
-    if not cookie_pairs(cfg)[0]:
-        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)", "red")
+    if not ENV.root and not cookie_pairs(cfg)[0]:
+        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5) และไม่รูทจึงดึงจากแอปไม่ได้", "red")
         return pause()
-    say("กำลังดึง Roblox ID จากคุกกี้...", "dim")
-    accts = social_accounts(cfg)
+    say("กำลังดึงคุกกี้จากทุกแอป แล้วอ่าน Roblox ID...", "dim")
+    accts = fps_accounts(cfg)
     if not accts:
+        say("ไม่พบบัญชีที่ใช้ได้", "red")
         return pause()
 
     def apply():
@@ -3626,6 +3775,7 @@ def menu_fps_cap(cfg):
 
 
 def menu_heartbeat(cfg):
+    """เมนูตั้งค่า heartbeat (พอร์ต, ช่วงส่ง, เวลารอต่อบัญชี, สคริปต์ autoexec, FPS)"""
     h = cfg.d["heartbeat"]
     while True:
         banner(cfg)
@@ -3643,14 +3793,16 @@ def menu_heartbeat(cfg):
         t.add_row("9", "แสดงตัวเลข FPS บนจอเกม (ลากได้ ไม่มีกรอบ ปรับขนาดตามจอ)", onoff(h["show_fps"]))
         t.add_row("10", "FPS cap ต่อบัญชี (ดึง Roblox ID จากคุกกี้) ...", T(fps_cap_summary(cfg)))
         t.add_row("11", "นำเข้าสคริปต์ของคุณลง autoexec (วางโค้ด / ไฟล์ / ลิงก์)", "")
+        t.add_row("12", "เช็ก heartbeat ทีละบัญชี: รอแต่ละบัญชีนานสุด (วินาที) ไม่เจอ = รีจอย", str(h["seq_wait"]))
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
         if c == "1":
             h["enabled"] = not h["enabled"]
-        elif c in ("2", "3", "4"):
-            key, lo, hi = {"2": ("port", 1024, 65535), "3": ("interval", 5, 120), "4": ("timeout", 30, 600)}[c]
+        elif c in ("2", "3", "4", "12"):
+            key, lo, hi = {"2": ("port", 1024, 65535), "3": ("interval", 5, 120), "4": ("timeout", 30, 600),
+                           "12": ("seq_wait", 30, 900)}[c]
             v = ask("ค่าใหม่ (%d-%d):" % (lo, hi))
             if v.isdigit() and lo <= int(v) <= hi:
                 h[key] = int(v)
