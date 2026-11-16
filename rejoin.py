@@ -320,6 +320,7 @@ DEFAULTS = {
         "rotate_min": 0,             # rotate accounts every N minutes (0 = off)
     },
     "heartbeat": {"enabled": True, "port": 8765, "interval": 15, "timeout": 90, "show_fps": True,
+                  "graphics": 1, "volume": 0, "reduce_motion": True,   # ตั้งในเกม: กราฟิกระดับ (0=ไม่แตะ, 1-10) / เสียง 0-100 (-1=ไม่แตะ) / ลดการเคลื่อนไหว
                   "seq_wait": 180,   # เช็ก heartbeat ทีละบัญชี: รอแต่ละบัญชีนานสุดกี่วินาที ไม่เจอ = รีจอยแล้วไปบัญชีถัดไป
                   "fps_cap": {"default": 0, "accounts": {}}},   # accounts: {"<Roblox UserId>": {"name": ..., "cap": N}}; default 0 = leave FPS alone
     "autoexec": {"auto_create": True, "enabled_once": False, "filename": "heartbeat.lua",
@@ -1228,6 +1229,9 @@ local ID       = "__ID__"       -- ชื่อแพ็กเกจหรือ
 local INTERVAL = __INTERVAL__   -- ส่งทุกกี่วินาที
 local SHOW_FPS = __SHOWFPS__    -- true = แสดงตัวเลข FPS บนจอ (ลากย้ายได้)
 local DEFAULT_CAP = __DEFCAP__  -- FPS cap ของบัญชีที่ไม่อยู่ในรายการ (0 = ไม่แตะ)
+local GRAPHICS_LEVEL = __GFX__   -- ระดับกราฟิก 1-10 (0 = ไม่แตะ)
+local VOLUME = __VOL__            -- ระดับเสียง 0-100 (-1 = ไม่แตะ)
+local REDUCE_MOTION = __RMOTION__ -- true = เปิด Reduce Motion
 local CAPS = {                  -- FPS cap ต่อบัญชี: [Roblox UserId] = FPS (ตั้งจากเมนูในเครื่องมือ)
 __CAPS__
 }
@@ -1304,6 +1308,25 @@ local function applyCap()
 end
 pcall(applyCap)
 
+-- ลดภาระเครื่อง: กราฟิกระดับต่ำ / ปิดเสียง / Reduce Motion (ทุกอย่างห่อ pcall เพราะชื่อพร็อพเพอร์ตี้ต่างกันตามเวอร์ชัน Roblox)
+local function applyLite()
+    local ok, ugs = pcall(function() return UserSettings():GetService("UserGameSettings") end)
+    if not ok or not ugs then return end
+    if GRAPHICS_LEVEL > 0 then
+        pcall(function() ugs.SavedQualityLevel = Enum.SavedQualityLevel["QualityLevel" .. GRAPHICS_LEVEL] end)
+        pcall(function() settings().Rendering.QualityLevel = GRAPHICS_LEVEL end)
+    end
+    if VOLUME >= 0 then
+        pcall(function() ugs.MasterVolume = VOLUME / 100 end)
+    end
+    if REDUCE_MOTION then
+        for _, n in ipairs({ "ReducedMotion", "ReducedMotionEnabled", "ReduceMotion" }) do
+            pcall(function() ugs[n] = true end)
+        end
+    end
+end
+pcall(applyLite)
+
 local lastFrame = os.clock()
 local frames, winStart = 0, os.clock()
 RunService.Heartbeat:Connect(function()
@@ -1347,6 +1370,7 @@ pcall(function() GuiService.ErrorMessageChanged:Connect(function() pcall(beat) e
 task.spawn(function()
     while true do
         pcall(applyCap)                              -- ตั้งซ้ำทุกรอบ เผื่อเกม/เอ็กซิคิวเตอร์รีเซ็ตค่า
+        pcall(applyLite)
         pcall(beat)
         task.wait(INTERVAL)
     end
@@ -1532,11 +1556,15 @@ def fps_caps(cfg):
     return default, caps
 
 
-def render_lua(inst_id, port, interval, show_fps=True, default_cap=0, caps=None):
+def render_lua(inst_id, port, interval, show_fps=True, default_cap=0, caps=None, gfx=1, volume=0, reduce_motion=True):
+    """สร้างโค้ด heartbeat.lua จาก template (พอร์ต, ช่วงส่ง, FPS cap, กราฟิก/เสียง/Reduce Motion)"""
     rows = ",\n".join("    [%d] = %d" % (u, c) for u, c in sorted((caps or {}).items()))
     return (LUA_TEMPLATE.replace("__PORT__", str(int(port))).replace("__INTERVAL__", str(int(interval)))
             .replace("__SHOWFPS__", "true" if show_fps else "false")
             .replace("__DEFCAP__", str(int(default_cap)))
+            .replace("__GFX__", str(max(0, min(10, int(gfx)))))
+            .replace("__VOL__", str(max(-1, min(100, int(volume)))))
+            .replace("__RMOTION__", "true" if reduce_motion else "false")
             .replace("__CAPS__", rows + ("," if rows else ""))
             .replace("__ID__", re.sub(r"[^\w.\-]", "", str(inst_id))))
 
@@ -1550,7 +1578,7 @@ def write_heartbeat_files(cfg):
     for i, pkg in enumerate(det, 1):
         p = os.path.join(d, "heartbeat_%d_%s.lua" % (i, pkg.split(".")[-1]))
         with open(p, "w", encoding="utf-8") as f:
-            f.write(render_lua(pkg, h["port"], h["interval"], h.get("show_fps", True), *fps_caps(cfg)))
+            f.write(render_lua(pkg, h["port"], h["interval"], h.get("show_fps", True), *fps_caps(cfg), gfx=h.get("graphics", 1), volume=h.get("volume", 0), reduce_motion=h.get("reduce_motion", True)))
         paths.append(p)
     return paths
 
@@ -1604,7 +1632,8 @@ def install_autoexec(cfg):
         if d in KNOWN_EXEC_DIRS and not os.path.isdir(os.path.dirname(d)):
             continue                                   # executor not installed: don't litter /sdcard with its folder
         path = os.path.join(d, a["filename"])
-        src = render_lua(ident, h["port"], h["interval"], h.get("show_fps", True), *fps_caps(cfg))
+        src = render_lua(ident, h["port"], h["interval"], h.get("show_fps", True), *fps_caps(cfg),
+                         gfx=h.get("graphics", 1), volume=h.get("volume", 0), reduce_motion=h.get("reduce_motion", True))
         try:
             old = None
             if os.path.exists(path):
@@ -3793,6 +3822,9 @@ def menu_heartbeat(cfg):
         t.add_row("9", "แสดงตัวเลข FPS บนจอเกม (ลากได้ ไม่มีกรอบ ปรับขนาดตามจอ)", onoff(h["show_fps"]))
         t.add_row("10", "FPS cap ต่อบัญชี (ดึง Roblox ID จากคุกกี้) ...", T(fps_cap_summary(cfg)))
         t.add_row("11", "นำเข้าสคริปต์ของคุณลง autoexec (วางโค้ด / ไฟล์ / ลิงก์)", "")
+        t.add_row("13", "กราฟิกในเกม ระดับ (1-10, 0=ไม่แตะ)", str(h["graphics"] or "ไม่แตะ"))
+        t.add_row("14", "ระดับเสียงในเกม (0-100, - = ไม่แตะ)", str(h["volume"]) if h["volume"] >= 0 else "ไม่แตะ")
+        t.add_row("15", "เปิด Reduce Motion ในเกม", onoff(h["reduce_motion"]))
         t.add_row("12", "เช็ก heartbeat ทีละบัญชี: รอแต่ละบัญชีนานสุด (วินาที) ไม่เจอ = รีจอย", str(h["seq_wait"]))
         console.print(t)
         c = ask("เลือกหมายเลข (0=กลับ)")
@@ -3835,6 +3867,31 @@ def menu_heartbeat(cfg):
             menu_fps_cap(cfg)
         elif c == "11":
             menu_import_script(cfg)
+        elif c in ("13", "14", "15"):
+            if c == "13":
+                v = ask("ระดับกราฟิก (0-10, 0=ไม่แตะ):")
+                if v.isdigit() and 0 <= int(v) <= 10:
+                    h["graphics"] = int(v)
+                elif v:
+                    say("ค่าต้องอยู่ระหว่าง 0-10", "red")
+                    pause()
+                    continue
+            elif c == "14":
+                v = ask("ระดับเสียง (0-100, - = ไม่แตะ):")
+                if v == "-":
+                    h["volume"] = -1
+                elif v.isdigit() and 0 <= int(v) <= 100:
+                    h["volume"] = int(v)
+                elif v:
+                    say("ค่าต้องอยู่ระหว่าง 0-100 หรือ -", "red")
+                    pause()
+                    continue
+            else:
+                h["reduce_motion"] = not h["reduce_motion"]
+            if cfg.d["autoexec"]["auto_create"]:
+                report_autoexec(cfg, install_autoexec(cfg), quiet_ok=False)
+                say("สคริปต์ใหม่จะโหลดตอนเข้าเกมครั้งถัดไป (รีจอยหรือเปิดเกมใหม่)", "dim")
+                pause()
         cfg.save()
 
 
