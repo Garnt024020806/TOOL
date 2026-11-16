@@ -5,6 +5,9 @@ local ID       = "auto"       -- ชื่อแพ็กเกจหรือ�
 local INTERVAL = 15   -- ส่งทุกกี่วินาที
 local SHOW_FPS = true    -- true = แสดงตัวเลข FPS บนจอ (ลากย้ายได้)
 local DEFAULT_CAP = 0  -- FPS cap ของบัญชีที่ไม่อยู่ในรายการ (0 = ไม่แตะ)
+local GRAPHICS_LEVEL = 1   -- ระดับกราฟิก 1-10 (0 = ไม่แตะ)
+local VOLUME = 0            -- ระดับเสียง 0-100 (-1 = ไม่แตะ)
+local REDUCE_MOTION = true -- true = เปิด Reduce Motion
 local CAPS = {                  -- FPS cap ต่อบัญชี: [Roblox UserId] = FPS (ตั้งจากเมนูในเครื่องมือ)
 
 }
@@ -81,6 +84,25 @@ local function applyCap()
 end
 pcall(applyCap)
 
+-- ลดภาระเครื่อง: กราฟิกระดับต่ำ / ปิดเสียง / Reduce Motion (ทุกอย่างห่อ pcall เพราะชื่อพร็อพเพอร์ตี้ต่างกันตามเวอร์ชัน Roblox)
+local function applyLite()
+    local ok, ugs = pcall(function() return UserSettings():GetService("UserGameSettings") end)
+    if not ok or not ugs then return end
+    if GRAPHICS_LEVEL > 0 then
+        pcall(function() ugs.SavedQualityLevel = Enum.SavedQualityLevel["QualityLevel" .. GRAPHICS_LEVEL] end)
+        pcall(function() settings().Rendering.QualityLevel = GRAPHICS_LEVEL end)
+    end
+    if VOLUME >= 0 then
+        pcall(function() ugs.MasterVolume = VOLUME / 100 end)
+    end
+    if REDUCE_MOTION then
+        for _, n in ipairs({ "ReducedMotion", "ReducedMotionEnabled", "ReduceMotion" }) do
+            pcall(function() ugs[n] = true end)
+        end
+    end
+end
+pcall(applyLite)
+
 local lastFrame = os.clock()
 local frames, winStart = 0, os.clock()
 RunService.Heartbeat:Connect(function()
@@ -124,6 +146,7 @@ pcall(function() GuiService.ErrorMessageChanged:Connect(function() pcall(beat) e
 task.spawn(function()
     while true do
         pcall(applyCap)                              -- ตั้งซ้ำทุกรอบ เผื่อเกม/เอ็กซิคิวเตอร์รีเซ็ตค่า
+        pcall(applyLite)
         pcall(beat)
         task.wait(INTERVAL)
     end
