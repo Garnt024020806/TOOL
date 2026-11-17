@@ -47,7 +47,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "2.6"
+VERSION = "2.7"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
 EXTRA_EXEC_DIRS = (
@@ -288,6 +288,7 @@ def setup_logging():
 # ----------------------------------------------------------------- config
 DEFAULTS = {
     "game_link": "",
+    "game_links": {},   # multi map: {แพ็กเกจ: ลิงก์เกม/Place ID} ใช้แทนลิงก์หลักเฉพาะแอปนั้น (ว่าง = ใช้ลิงก์หลัก)
     "check_interval": 30,
     "launch_delay": 15,
     "friend_gap_sec": 8,   # เพิ่มเพื่อน (เมนู 8 ข้อ 4): เว้นอย่างน้อยกี่วินาทีระหว่างสองคำขอจากบัญชีเดียวกัน (กัน HTTP 429)
@@ -332,7 +333,7 @@ DEFAULTS = {
     "alert": {"enabled": True, "storm_count": 5, "storm_window_min": 60, "cooldown_min": 30, "low_ram_mb": 0},   # low_ram_mb 0 = use ram.min_free_mb
     "ui": {"streamer_mode": True, "lang": "th"},   # hide account names on screen (first 4 chars + #)
     "console_webhook": {"enabled": False, "url": "", "flush_sec": 10},   # blank url = reuse the main webhook
-    "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "kill_cached": False,
+    "ram": {"enabled": True, "interval_min": 30, "min_free_mb": 300, "drop_level": 1, "kill_cached": False,
             "kill_others": False, "protect": ["termux", "magisk", "delta", "controlthescreenorientation"]},
     "webhook": {
         "url": "",
@@ -591,6 +592,9 @@ def stop_cmd(pkg, why=""):
 
 
 RAM_LAST = {"detail": ""}
+# ชื่อ (บางส่วน) ของแอปที่ kill_others/kill_cached ห้ามแตะเสมอ: ตัวจัดการรูท/ตัวช่วยของตู้คลาวด์/รีโมต/ADB ที่ถ้าตายอาจดึง Termux ล่มตามไป
+EXTRA_PROTECT = ["kernelsu", "supersu", "cloud", "vmos", "agent", "remote", "adb", "scrcpy", "vnc", "anydesk",
+                 "teamviewer", "daemon", "service", "keyboard", "inputmethod", "launcher"]
 DROP = {"ok": None}   # None = not probed yet
 
 
@@ -608,7 +612,7 @@ def kill_others(cfg):
     running = {p.split(":")[0] for p in snap["procs"]} if ps_ok else set()
     # termux/root managers are ALWAYS protected, whatever the user types in the protect list
     prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [x.lower() for x in prefixes(cfg)] + [
-                                                                      "termux", "magisk", "kernelsu", "supersu", "controlthescreenorientation"])
+        "termux", "magisk", "controlthescreenorientation"] + EXTRA_PROTECT)
     keep = set(cfg.d["detected"]) | set(KEEP_PKGS) | {home_pkg()}
     if not ps_ok:                                      # cannot tell which apps are running (maybe this terminal): skip
         return [], False
@@ -629,7 +633,7 @@ def kill_cached_safe(cfg):
     _, o3 = sh("pm list packages -3", root=True, timeout=30)
     third = {l.split(":", 1)[1].strip() for l in o3.splitlines() if l.startswith("package:")}
     prot = ([x.strip().lower() for x in r["protect"] if x.strip()] + [x.lower() for x in prefixes(cfg)] + [
-        "termux", "magisk", "kernelsu", "supersu", "controlthescreenorientation"])
+        "termux", "magisk", "controlthescreenorientation"] + EXTRA_PROTECT)
     keep = set(cfg.d["detected"]) | set(KEEP_PKGS) | {home_pkg()}
     victims = [p for p in sorted(third) if p not in keep and not any(x in p.lower() for x in prot)][:80]
     if victims:
@@ -650,13 +654,19 @@ def drop_ram(kill_cached=False, cfg=None):
         DROP["ok"] = (rc == 0)
         if not DROP["ok"]:
             steps.append(("drop_caches", False, "unavailable here (read-only), skipped from now on"))
+    level = 1                                          # 1 = ล้างเฉพาะ page cache (เบา) ; 2 = dentries/inodes ; 3 = ทั้งคู่ (ลึก อาจทำเครื่องกระตุก/Termux ค้าง)
+    if cfg is not None:
+        try:
+            level = min(3, max(1, int(cfg.d["ram"].get("drop_level", 1))))
+        except (TypeError, ValueError):
+            level = 1
     if DROP["ok"]:
-        rc, out = sh("sync; echo 3 > /proc/sys/vm/drop_caches", root=True, timeout=40)
+        rc, out = sh("echo %d > /proc/sys/vm/drop_caches" % level, root=True, timeout=15)   # ไม่ใช้ sync: เขียนดิสก์ค้างบนตู้คลาวด์ได้นาน
         if rc != 0:
             DROP["ok"] = False                         # don't retry every cycle
             steps.append(("drop_caches", False, "denied, skipped from now on"))
         else:
-            steps.append(("drop_caches", True, ""))
+            steps.append(("drop_caches", True, "level %d" % level))
     if kill_cached and cfg is not None:                # never a global `am kill-all`: it would also kill Termux
         try:
             v = kill_cached_safe(cfg)
@@ -762,6 +772,12 @@ def parse_link(link):
     if re.match(r"https?://(www\.)?(roblox\.com|ro\.blox\.com)/", s):
         return s, ""
     return None
+
+
+def link_for(cfg, pkg):
+    """ลิงก์เกมที่แอป pkg ต้องใช้: ลิงก์เฉพาะแอป (game_links) ถ้าตั้งไว้และถูกต้อง ไม่งั้นใช้ลิงก์หลัก game_link"""
+    own = (cfg.d.get("game_links") or {}).get(pkg, "")
+    return own if own and parse_link(own) else cfg.d["game_link"]
 
 
 def open_game(pkg, uri, force_stop):
@@ -2090,7 +2106,8 @@ class Engine:
                 free = mem_available_mb()
                 due = r["interval_min"] > 0 and now - last_ram >= r["interval_min"] * self.MIN
                 low = bool(r["min_free_mb"] > 0 and free is not None and free < r["min_free_mb"] and now - last_ram >= self.MIN)
-                if due or low:
+                busy = any(i.state in ("queued", "launching") for i in self.insts)   # กำลังเปิดแอป: ไม่ล้างแรมซ้ำเติม
+                if (due or low) and not busy:
                     self.clear_ram("แรมว่างต่ำ" if low else "ตามเวลา")
                     last_ram = time.time()
             try:
@@ -2152,6 +2169,7 @@ class Engine:
                            [("แรมว่าง", "%d MB" % free), ("เกณฑ์", "%d MB" % lim)])
 
     def clear_ram(self, why):
+        """ล้างแรมหนึ่งรอบ (drop_caches ตาม ram.drop_level + ตัวเลือกปิดแอปอื่น) แล้วบันทึกผลลง event/log"""
         ok, before, after = drop_ram(self.cfg.d["ram"]["kill_cached"], self.cfg)
         if ok:
             self.event("ล้างแรม (%s): ว่าง %s → %s MB | %s" % (why, before, after, RAM_LAST["detail"]), "cyan")
@@ -2287,7 +2305,8 @@ class Engine:
             if self.stop.is_set():
                 return False
             inst.state, inst.detail = "launching", ""
-            ok, msg = open_game(inst.pkg, self.uri, c["auto"]["force_stop"] or force)
+            uri = (parse_link(link_for(self.cfg, inst.pkg)) or (self.uri, ""))[0]   # multi map: แต่ละแอปใช้แมพของตัวเอง
+            ok, msg = open_game(inst.pkg, uri, c["auto"]["force_stop"] or force)
             self.last_launch = time.time()
         inst.launched_at = time.time()
         inst.pres_at = 0.0
@@ -2553,7 +2572,7 @@ class Engine:
         if now - inst.chal_at < 300:
             return False
         inst.chal_at = now
-        pid = (parse_link(self.cfg.d["game_link"]) or ("", ""))[1]
+        pid = (parse_link(link_for(self.cfg, inst.pkg)) or ("", ""))[1]
         if not pid.isdigit():
             return False
         if inst.session is None:
@@ -2845,13 +2864,15 @@ def refresh_packages(cfg):
 
 # ----------------------------------------------------------------- menus
 def menu_start(cfg, hook):
-    parsed = parse_link(cfg.d["game_link"])
+    parsed = parse_link(cfg.d["game_link"]) or ("", "")
     pkgs = selected_packages(cfg)
-    if not parsed:
-        say("ยังไม่ได้ตั้งลิงก์เกม (หรือลิงก์ไม่ถูกต้อง) ไปที่เมนู 3 ก่อน", "red")
-        return pause()
     if not pkgs:
         say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
+        return pause()
+    nolink = [p for p in pkgs if not parse_link(link_for(cfg, p))]
+    if nolink:
+        say("ยังไม่ได้ตั้งลิงก์เกม (หรือลิงก์ไม่ถูกต้อง) ไปที่เมนู 3 ก่อน" +
+            ("" if len(nolink) == len(pkgs) else " | แอปที่ยังไม่มีลิงก์: " + ", ".join(nolink)), "red")
         return pause()
     if cfg.d["auto"]["cookie_pull_on_start"] and ENV.root:
         have = {p for p, _ in cookie_pairs(cfg)[0]}
@@ -2946,6 +2967,54 @@ def menu_status(cfg):
         pass
 
 
+def menu_multi_map(cfg):
+    """ตั้งแมพ/ลิงก์เกมแยกตามแอป (multi map): เลือกเลขแอป (คั่นหลายตัวด้วยคอมมา) แล้ววางลิงก์ / a=ทุกแอป / c=ล้างทั้งหมด"""
+    while True:
+        banner(cfg)
+        det = cfg.d["detected"]
+        gl = cfg.d.setdefault("game_links", {})
+        t = Table(title="ตั้งแมพแยกตามแอป (Multi Map)", box=box.ROUNDED, header_style="bold cyan")
+        for col in ("#", "แพ็กเกจ", "ลิงก์ที่ใช้เปิดจริง", "Place ID"):
+            t.add_column(col)
+        for i, pkg in enumerate(det, 1):
+            own = gl.get(pkg) if parse_link(gl.get(pkg, "")) else ""
+            link = link_for(cfg, pkg)
+            parsed = parse_link(link)
+            shown = (link[:50] + "…" if len(link) > 50 else link) or "(ยังไม่ตั้ง)"
+            t.add_row(str(i), pkg, Text(shown, style="green" if own else "dim") if own else Text(shown + (" [หลัก]" if link else ""), style="dim"),
+                      (parsed[1] if parsed else "") or "-")
+        console.print(t)
+        say("เลขแอป (เช่น 1,3) = ตั้งแมพให้แอปนั้น | a = ทุกแอป | c = ล้างแมพเฉพาะแอปทั้งหมด (กลับไปใช้ลิงก์หลัก)", "dim")
+        c = ask("เลือก (0=กลับ)").lower().replace(" ", "")
+        if c in ("0", ""):
+            return
+        if c == "c":
+            gl.clear()
+            cfg.save()
+            continue
+        if c == "a":
+            targets = list(det)
+        else:
+            idx = [int(x) for x in c.split(",") if x.isdigit() and 1 <= int(x) <= len(det)]
+            targets = [det[i - 1] for i in dict.fromkeys(idx)]
+        if not targets:
+            say("เลือกไม่ถูกต้อง", "red")
+            pause()
+            continue
+        v = ask("วางลิงก์เกม / Place ID สำหรับ %d แอป (- = ล้างแมพเฉพาะแอป, Enter=ยกเลิก):" % len(targets))
+        if v == "-":
+            for pkg in targets:
+                gl.pop(pkg, None)
+        elif v and not parse_link(v):
+            say("รูปแบบลิงก์ไม่ถูกต้อง", "red")
+            pause()
+            continue
+        elif v:
+            for pkg in targets:
+                gl[pkg] = v
+        cfg.save()
+
+
 def menu_settings(cfg):
     while True:
         banner(cfg)
@@ -2960,6 +3029,8 @@ def menu_settings(cfg):
         t.add_row("3", "หน่วงเวลาเปิดแต่ละอินสแตนซ์ (วินาที)", str(cfg.d["launch_delay"]))
         t.add_row("4", "ซ่อนชื่อบัญชี (streamer mode: โชว์ 4 ตัวแรก ที่เหลือเป็น #)", onoff(cfg.d["ui"]["streamer_mode"]))
         t.add_row("5", "ภาษา / Language (ไทย/English)", "English" if LANG["en"] else "ไทย")
+        ngl = sum(1 for k, v in (cfg.d.get("game_links") or {}).items() if parse_link(v))
+        t.add_row("6", "ตั้งแมพแยกตามแอป (Multi Map)", "%d แอป" % ngl if ngl else "ไม่ได้ใช้")
         console.print(t)
         if p:
             say("ลิงก์ที่ใช้เปิดจริง: " + p[0], "dim")
@@ -2974,6 +3045,8 @@ def menu_settings(cfg):
             elif v:
                 cfg.d["game_link"] = v
                 cfg.save()
+        elif c == "6":
+            menu_multi_map(cfg)
         elif c == "4":
             cfg.d["ui"]["streamer_mode"] = STREAMER["on"] = not cfg.d["ui"]["streamer_mode"]
             cfg.save()
@@ -4856,7 +4929,7 @@ def main():
     refresh_packages(cfg)
     if cfg.d["autoexec"]["auto_create"]:
         report_autoexec(cfg, install_autoexec(cfg))
-    if cfg.d["auto"]["start_on_launch"] and parse_link(cfg.d["game_link"]) and cfg.d["detected"]:
+    if cfg.d["auto"]["start_on_launch"] and cfg.d["detected"] and all(parse_link(link_for(cfg, p)) for p in cfg.d["detected"]):
         say("เริ่มอัตโนมัติใน 5 วินาที (Ctrl+C เพื่อยกเลิก)", "yellow")
         try:
             time.sleep(5)
