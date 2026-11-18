@@ -40,14 +40,14 @@ try:
     from rich import box
     from rich.console import Console, Group
     from rich.live import Live
-    from rich.panel import Panel
+    from rich.panel import Panel as _RichPanel
     from rich.table import Table as _RichTable
-    from rich.text import Text
+    from rich.text import Text as _RichText
 except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "2.8"
+VERSION = "2.9"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
 EXTRA_EXEC_DIRS = (
@@ -145,9 +145,627 @@ EN = {
 }
 
 
+EN.update({
+    "ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt": "Required library missing: %s\nRun: pip install -r requirements.txt",
+    "********  (%d ตัวอักษร)": "********  (%d chars)",
+    " | เฉลี่ย %.0f%%": " | avg %.0f%%",
+    " | %d คอร์": " | %d cores",
+    " (ประมาณจากโหลดเฉลี่ย)": " (estimated from load average)",
+    "ต้องใช้รูท": "Root required",
+    "เปิดแอปแล้วแต่ลิงก์เกมไม่ทำงาน (ใช้ launcher แทน)": "App opened but the game link didn't work (using launcher instead)",
+    "# GARNT TOOL REJOIN - cookie.txt\n# ใส่คุกกี้ .ROBLOSECURITY ของบัญชีตัวเอง 1 บรรทัด / 1 บัญชี\n# เรียงตามอินสแตนซ์ที่ตรวจพบ (บรรทัดแรก = แพ็กเกจแรก) ห้ามแชร์ไฟล์นี้ให้ใคร\n# บรรทัดว่างและบรรทัดที่ขึ้นต้นด้วย # จะถูกข้าม\n# บรรทัดที่มีแค่ - = อินสแตนซ์นั้นยังไม่มีคุกกี้ (ใช้คงลำดับ)\n": "# GARNT TOOL REJOIN - cookie.txt\n# Put your own .ROBLOSECURITY cookie, 1 line / 1 account\n# In the order of the detected instances (first line = first package). Never share this file with anyone\n# Blank lines and lines starting with # are skipped\n# A line with just - = that instance has no cookie yet (keeps the order)\n",
+    "คุกกี้หมดอายุ/ไม่ถูกต้อง": "Cookie expired/invalid",
+    "ไม่พบตาราง cookies": "cookies table not found",
+    "ต้องใช้สิทธิ์รูท": "Root permission required",
+    "ไม่พบฐานข้อมูลคุกกี้ (เปิดแอปค้างไว้ 1 ครั้งก่อน)": "Cookie database not found (open the app once and leave it running first)",
+    "อ่านเจ้าของโฟลเดอร์แอปไม่ได้": "Can't read the app folder owner",
+    "คัดลอกฐานข้อมูลไม่สำเร็จ": "Failed to copy the database",
+    "เขียนฐานข้อมูลกลับไม่สำเร็จ": "Failed to write the database back",
+    "ใส่คุกกี้แล้ว": "Cookie injected",
+    "คุกกี้ใช้ไม่ได้: %s": "Cookie unusable: %s",
+    "คุกกี้ในแอปถูกเข้ารหัส อ่านไม่ได้": "The in-app cookie is encrypted and can't be read",
+    "ไม่พบคุกกี้ (ยังไม่ได้ล็อกอินในแอปนี้)": "No cookie found (not logged in to this app yet)",
+    "คุกกี้ในแอปใช้ไม่ได้: ": "In-app cookie unusable: ",
+    "ชื่อแพ็กเกจไม่ถูกต้อง": "Invalid package name",
+    "ลบคุกกี้ในแอปและ appStorage แล้ว": "Deleted in-app cookie and appStorage",
+    "ไม่พบฐานข้อมูลคุกกี้ (ลบ appStorage แล้ว)": "Cookie database not found (appStorage deleted)",
+    " | cap: ไม่ได้ตั้งให้ ID นี้ (%s)": " | cap: not set for this ID (%s)",
+    " | cap: เอ็กซิคิวเตอร์ไม่มี setfpscap": " | cap: executor has no setfpscap",
+    " | cap: เรียกแล้ว error": " | cap: call raised an error",
+    " | cap: ตั้งแล้วแต่ไม่ติด (FPS จริง %s ตัวรันอาจไม่รองรับหรือมีตั้งค่าทับ)": " | cap: set but not effective (actual FPS %s; the executor may not support it or something overrides it)",
+    " | cap: เรียกแล้วแต่ไม่ติด (อ่านกลับได้ %s)": " | cap: called but not effective (read back %s)",
+    "พร้อมใช้งาน": "ready",
+    "สร้างแล้ว": "created",
+    "อัปเดตแล้ว": "updated",
+    "ข้าม (มีไฟล์ชื่อเดียวกันที่ไม่ใช่ของเครื่องมือ)": "skipped (a file with the same name exists that isn't the tool's)",
+    "เปิดใช้ heartbeat ให้แล้ว (ปิดได้ที่ เมนู 6 > Heartbeat > 1)": "Heartbeat enabled for you (turn it off at menu 6 > Heartbeat > 1)",
+    "error: ชื่อไฟล์ไม่ถูกต้อง (ใช้ .lua หรือ .txt และห้ามซ้ำ heartbeat)": "error: invalid file name (use .lua or .txt and don't reuse \"heartbeat\")",
+    "คำสั่ง: rejoin <เลข|all> | pause <เลข|all> | resume <เลข|all> | status | ram | shot | streamer | help | quit": "Commands: rejoin <n|all> | pause <n|all> | resume <n|all> | status | ram | shot | streamer | help | quit",
+    "แอปปิด/ค้าง (ไม่พบโปรเซส)": "App closed/hung (process not found)",
+    "แอปไม่ได้อยู่หน้าจอ": "App is not in the foreground",
+    "ไม่มี heartbeat จากสคริปต์ในเกม": "No heartbeat from the in-game script",
+    "พบหน้าต่าง Disconnected (เช่น Error Code 277)": "Disconnected window detected (e.g. Error Code 277)",
+    "รีจอยตามเวลาที่ตั้งไว้": "Scheduled rejoin",
+    "ไม่ได้อยู่ในเกม": "Not in a game",
+    "กำลังเปิดแอป": "Launching app",
+    "รอคิวเปิด": "Waiting in launch queue",
+    "กำลังเข้าเกม": "Joining game",
+    "ปกติ": "Normal",
+    "รอรีจอย": "Waiting to rejoin",
+    "ไม่ทราบสถานะ": "Unknown state",
+    "หยุดชั่วคราว": "Paused",
+    "หยุดแล้ว": "Stopped",
+    "เริ่มทำงาน %d อินสแตนซ์ (โหมด %s)": "Started %d instances (mode %s)",
+    "เริ่มจัดการ %d อินสแตนซ์": "Managing %d instances",
+    "▶️ เริ่มรีจอยอัตโนมัติ": "▶️ Auto rejoin started",
+    "ตรวจทุก": "Check every",
+    "โหมด": "Mode",
+    "บอท Telegram ควบคุมระยะไกลทำงาน (/help)": "Telegram remote-control bot is running (/help)",
+    "หยุดการทำงาน (รันมา %s)": "Stopped (ran for %s)",
+    "รันมาแล้ว ": "Ran for ",
+    "⏹️ หยุดรีจอยอัตโนมัติ": "⏹️ Auto rejoin stopped",
+    "รีจอย %d ครั้ง": "Rejoined %d times",
+    "ตามเวลา": "scheduled",
+    "แรมว่างต่ำ": "low free RAM",
+    "ส่งรายงานสถานะไม่สำเร็จ: %s": "Failed to send status report: %s",
+    "%s: หลุด/ค้าง %d ครั้งใน %d นาที (ผิดปกติ)": "%s: dropped/hung %d times in %d min (abnormal)",
+    "🚨 รีจอยถี่ผิดปกติ": "🚨 Abnormally frequent rejoins",
+    "%d ครั้ง / %d นาที": "%d times / %d min",
+    "หลุดในช่วงเวลา": "Drops in period",
+    "แรมว่างต่ำ %d MB (เกณฑ์ %d MB)": "Low free RAM %d MB (threshold %d MB)",
+    "แรมว่าง %d MB ต่ำกว่าเกณฑ์ %d MB": "Free RAM %d MB is below the threshold %d MB",
+    "🚨 แรมว่างต่ำ": "🚨 Low free RAM",
+    "เกณฑ์": "Threshold",
+    "แรมว่าง": "Free RAM",
+    "ล้างแรม (%s): ว่าง %s → %s MB | %s": "RAM cleared (%s): free %s → %s MB | %s",
+    "ล้างแรมไม่สำเร็จ: %s": "RAM clear failed: %s",
+    "%s | รีจอย %d | ล้มเหลว %d%s": "%s | rejoins %d | failures %d%s",
+    "รันมาแล้ว": "Uptime",
+    "รายงานตามคำสั่ง": "On-demand report",
+    "รายงานประจำทุก %d นาที": "Periodic report every %d min",
+    "📸 รายงานสถานะ": "📸 Status report",
+    "หยุดชั่วคราวด้วยคำสั่ง (พิมพ์ resume)": "Paused by command (type resume)",
+    "%s: หยุดชั่วคราว": "%s: paused",
+    "%s: รีจอยด้วยคำสั่ง": "%s: rejoin by command",
+    "ใช้: %s <เลขอินสแตนซ์|all>": "Usage: %s <instance number|all>",
+    "สั่ง %s อินสแตนซ์ %s": "Sent %s to instance %s",
+    "โหมดซ่อนชื่อบัญชี (streamer): ": "Streamer mode (hide account names): ",
+    "คำสั่ง %s ต้องใช้รูท": "Command %s requires root",
+    "ไม่รู้จักคำสั่ง: %s (พิมพ์ help)": "Unknown command: %s (type help)",
+    "คำสั่ง": "Command",
+    "บันทึกภาพหน้าจอ: %s": "Screenshot saved: %s",
+    "คำสั่ง %s ผิดพลาด: %s": "Command %s failed: %s",
+    "%s: ข้อผิดพลาด %s": "%s: error %s",
+    "%s: worker หยุดเพราะ %s": "%s: worker stopped because %s",
+    "รอคิวเปิดแอป": "Waiting in app launch queue",
+    "รอเข้าเกม": "Waiting to join game",
+    "%s: เปิดเกมไม่สำเร็จ: %s": "%s: failed to launch game: %s",
+    "%s: เปิดเกมแล้ว": "%s: game launched",
+    "%s: รีจอยแล้ว (ครั้งที่ %d)": "%s: rejoined (#%d)",
+    "🔁 รีจอยแล้ว": "🔁 Rejoined",
+    "ครั้งที่": "Attempt #",
+    "ยังไม่มี heartbeat หลังเปิดเกมใหม่": "No heartbeat yet since the game was relaunched",
+    "heartbeat %ds ก่อน%s%s": "heartbeat %ds ago%s%s",
+    "ไม่มี heartbeat มา %ds%s": "No heartbeat for %ds%s",
+    "ไม่พบโปรเซส แต่ยังมีสัญญาณ (%s)": "Process not found but there's still a signal (%s)",
+    "ไม่พบโปรเซส รอเช็ก API/heartbeat อีก %ds": "Process not found; waiting %ds more for the API/heartbeat check",
+    "อยู่ในเกม": "In game",
+    "heartbeat ยังส่ง (API ว่าไม่อยู่ในเกม อาจดีเลย์)": "Heartbeat still arriving (API says not in game; may be delayed)",
+    "แอปทำงานอยู่ (ไม่มีข้อมูลสถานะเกม)": "App is running (no game status data)",
+    "ไม่ทราบสถานะ (ไม่รูท/ไม่มีคุกกี้)": "Unknown state (non-root / no cookie)",
+    "%s: ตรวจ heartbeat ผิดพลาด %s": "%s: heartbeat check error %s",
+    "%s: ไม่เคยได้ heartbeat เลย หยุดรีจอยเพราะ heartbeat (ตรวจว่าลงสคริปต์แล้ว/ID ตรงกัน)": "%s: never received a heartbeat; stopped rejoining because of heartbeat (check the script is installed / the ID matches)",
+    "%s: ไม่เจอ heartbeat ใน %ds → รีจอย แล้วไปบัญชีถัดไป": "%s: no heartbeat within %ds → rejoin, then move to the next account",
+    "%s: เสถียรครบ %ds รีเซ็ต backoff": "%s: stable for %ds, backoff reset",
+    "%s: %s (ครั้งที่ %d) รีจอยใน %ds": "%s: %s (#%d) rejoin in %ds",
+    "⚠️ หลุด/ค้าง": "⚠️ Dropped/hung",
+    "สาเหตุ": "Cause",
+    "รีจอยใน": "Rejoin in",
+    "ล้มเหลวติดกัน": "Consecutive failures",
+    "🍪 คุกกี้หมดอายุ/ใช้ไม่ได้": "🍪 Cookie expired/unusable",
+    "%s: บัญชีถูกจำกัด/แบน/ถูกเตือน (ตรวจจาก Roblox)": "%s: account restricted/banned/warned (checked via Roblox)",
+    "⛔ บัญชีถูกจำกัด/แบน/ถูกเตือน": "⛔ Account restricted/banned/warned",
+    "บัญชีถูกจำกัด/แบน หยุดรีจอยแล้ว (พิมพ์ resume %d ถ้าต้องการลองต่อ)": "Account restricted/banned; rejoin stopped (type resume %d to try again)",
+    "Roblox ขอให้ยืนยันตัวตน (%s) ทำเองในแอป แล้วพิมพ์ resume %d": "Roblox asked for verification (%s); do it yourself in the app, then type resume %d",
+    "%s: ต้องยืนยัน %s หยุดรีจอยตัวนี้ไว้": "%s: verification required %s; rejoin for this one is paused",
+    "🧩 ต้องยืนยัน Captcha/FaceID": "🧩 Captcha/FaceID required",
+    "ชนิด": "Type",
+    "%s: สลับบัญชีไม่ได้ (ต้องใช้รูท)": "%s: can't switch account (root required)",
+    "%s: สลับบัญชีไม่สำเร็จ: %s": "%s: account switch failed: %s",
+    "คุกกี้ตาย": "cookie dead",
+    "บัญชีถูกแบน": "account banned",
+    "หมุนเวียนตามเวลา": "scheduled rotation",
+    "%s: สลับไปบัญชี %s (%s)": "%s: switched to account %s (%s)",
+    "🔀 สลับบัญชี": "🔀 Account switched",
+    "บัญชีใหม่": "New account",
+    "%s: ไม่มีบัญชีสำรองที่ใช้ได้ใน cookie.txt": "%s: no usable spare account in cookie.txt",
+    "%s หลุด → สั่งรีจอยอินสแตนซ์ %s ด้วย": "%s dropped → also rejoining instance(s) %s",
+    "โหมด: ": "Mode: ",
+    "  |  ตรวจทุก %ds": "  |  check every %ds",
+    "  |  หน่วงเปิด %ss": "  |  launch delay %ss",
+    "  |  รันมา ": "  |  uptime ",
+    "  |  RAM ว่าง %d MB": "  |  free RAM %d MB",
+    "  |  โหลด %.1f": "  |  load %.1f",
+    "\nพิมพ์คำสั่งแล้วกด Enter (help = รายการคำสั่ง) | quit หรือ Ctrl+C = หยุดและกลับเมนู": "\nType a command and press Enter (help = command list) | quit or Ctrl+C = stop and return to the menu",
+    "รีจอย": "Rejoin",
+    "คอนโซล": "Console",
+    "เหตุการณ์ล่าสุด (ใหม่สุดอยู่บน)": "Latest events (newest on top)",
+    "/status — สถานะทุกอินสแตนซ์\n/rejoin <n|all> — รีจอยทันที\n/pause <n|all> — หยุดชั่วคราว\n/resume <n|all> — เล่นต่อ\n/shot — แคปหน้าจอ (รูท)\n/ram — ล้างแรม (รูท)": "/status — status of all instances\n/rejoin <n|all> — rejoin now\n/pause <n|all> — pause\n/resume <n|all> — resume\n/shot — screenshot (root)\n/ram — clear RAM (root)",
+    "ใช้: /%s <เลขอินสแตนซ์|all>": "Usage: /%s <instance number|all>",
+    "รีโมต: %s อินสแตนซ์ %s": "Remote: %s instance(s) %s",
+    "รับคำสั่ง %s: %s": "Received command %s: %s",
+    "คำสั่งนี้ต้องใช้รูท": "This command requires root",
+    "กำลังล้างแรม": "Clearing RAM",
+    "แคปหน้าจอไม่สำเร็จ": "Screenshot failed",
+    "ไม่รู้จักคำสั่ง (พิมพ์ /help)": "Unknown command (type /help)",
+    "   อินสแตนซ์: ": "   Instances: ",
+    "   ลิงก์เกม: ": "   Game link: ",
+    "ตั้งแล้ว": "set",
+    "ยังไม่ตั้ง": "not set",
+    "โฟลเดอร์: ": "Folder: ",
+    "🆕 มีเวอร์ชันใหม่ v%s (ตอนนี้ v%s) → เลือกเมนู 11 เพื่ออัปเดต": "🆕 New version v%s available (current v%s) → choose menu 11 to update",
+    "ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน": "No Roblox packages found; go to menu 4 and scan first",
+    "ยังไม่ได้ตั้งลิงก์เกม (หรือลิงก์ไม่ถูกต้อง) ไปที่เมนู 3 ก่อน": "Game link not set (or invalid); go to menu 3 first",
+    " | แอปที่ยังไม่มีลิงก์: ": " | apps without a link: ",
+    "กำลังดึงคุกกี้จากแอป %d อินสแตนซ์ที่ยังไม่มีคุกกี้...": "Pulling cookies from %d instance apps that have none yet...",
+    "ได้คุกกี้ของ ": "Got the cookie of ",
+    "ข้ามการล็อกอินด้วยคุกกี้: ต้องใช้รูท": "Skipping cookie login: root required",
+    "รับ heartbeat ที่ 127.0.0.1:%d (ทดสอบ: curl http://127.0.0.1:%d/ping)": "Receiving heartbeat at 127.0.0.1:%d (test: curl http://127.0.0.1:%d/ping)",
+    "เปิดพอร์ต heartbeat ไม่ได้ (%s) ข้ามการใช้ heartbeat": "Can't open the heartbeat port (%s); skipping heartbeat",
+    "\nกำลังหยุด...": "\nStopping...",
+    "หยุดการทำงานแล้ว": "Stopped",
+    "ไม่": "No",
+    "ไม่ทราบ": "Unknown",
+    "มี": "Yes",
+    "โหมด: %s | ตรวจทุก %ss | หน่วงเปิด %ss | คุกกี้ในไฟล์: %d บรรทัด | RAM ว่าง %s MB | โหลด %s%s": "Mode: %s | check every %ss | launch delay %ss | cookies in file: %d lines | free RAM %s MB | load %s%s",
+    "ไม่รูท": "non-root",
+    " | โหมดไม่รูทตรวจโปรเซส/หน้าจอไม่ได้": " | non-root mode can't check the process/foreground",
+    "แผงสดรีเฟรชอัตโนมัติ — กด Enter หรือ Ctrl+C เพื่อกลับเมนู": "Live panel refreshes automatically — press Enter or Ctrl+C to return to the menu",
+    "ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)": "No packages found; try menu 4 (scan packages)",
+    "ลิงก์ที่ใช้เปิดจริง": "Link actually used to launch",
+    " [หลัก]": " [main]",
+    "เลขแอป (เช่น 1,3) = ตั้งแมพให้แอปนั้น | a = ทุกแอป | c = ล้างแมพเฉพาะแอปทั้งหมด (กลับไปใช้ลิงก์หลัก)": "App number (e.g. 1,3) = set a map for that app | a = all apps | c = clear all per-app maps (back to the main link)",
+    "เลือก (0=กลับ)": "Choose (0=back)",
+    "เลือกไม่ถูกต้อง": "Invalid choice",
+    "วางลิงก์เกม / Place ID สำหรับ %d แอป (- = ล้างแมพเฉพาะแอป, Enter=ยกเลิก):": "Paste game link / Place ID for %d app(s) (- = clear per-app map, Enter=cancel):",
+    "รูปแบบลิงก์ไม่ถูกต้อง": "Invalid link format",
+    "%d แอป": "%d app(s)",
+    "ตั้งแมพแยกตามแอป (Multi Map)": "Per-app map (Multi Map)",
+    "ไม่ได้ใช้": "not used",
+    "ลิงก์ที่ใช้เปิดจริง: ": "Link actually used to launch: ",
+    "วางลิงก์เกม (roblox.com/games/..., ลิงก์ private server, ลิงก์แชร์ หรือ Place ID):": "Paste the game link (roblox.com/games/..., private server link, share link or Place ID):",
+    "ค่าใหม่ (วินาที, ต่ำสุด %d):": "New value (seconds, minimum %d):",
+    "ต้องเป็นตัวเลข >= %d": "Must be a number >= %d",
+    "กำลังสแกนแพ็กเกจ %s ...": "Scanning packages %s ...",
+    "ไม่พบแพ็กเกจ (ถ้าอินสแตนซ์ใช้ชื่ออื่น พิมพ์ชื่อแพ็กเกจเองได้ คั่นด้วยคอมมา)": "No packages found (if your instances use other names, type the package names yourself, comma-separated)",
+    "แพ็กเกจ (Enter=ข้าม):": "Packages (Enter=skip):",
+    "แพ็กเกจที่พบ": "Packages found",
+    "เลือกที่จะรัน เช่น 1,3 | all=ทั้งหมด | Enter=คงเดิม:": "Choose which to run, e.g. 1,3 | all=everything | Enter=keep current:",
+    "บันทึกแล้ว": "Saved",
+    "สร้างไฟล์ตัวอย่างแล้ว: ": "Created sample file: ",
+    "ยังไม่มีคุกกี้ใน cookie.txt  (1 บรรทัด / 1 บัญชี เรียงตามอินสแตนซ์)\nไฟล์: ": "No cookies in cookie.txt yet  (1 line / 1 account, in instance order)\nFile: ",
+    "คุกกี้มากกว่าอินสแตนซ์ (%d > %d) ส่วนเกินจะถูกข้าม": "More cookies than instances (%d > %d); the extras will be skipped",
+    "คุกกี้ที่จับคู่กับอินสแตนซ์ (ตามลำดับ)": "Cookies paired with instances (in order)",
+    "บรรทัด": "Line",
+    "ผลตรวจ": "Check result",
+    "ใช้ได้: ": "Valid: ",
+    "ใช้ไม่ได้: ": "Invalid: ",
+    "โหมดไม่รูท: ตรวจคุกกี้ได้อย่างเดียว การใส่คุกกี้ลงแอปต้องใช้รูท": "Non-root mode: can only check cookies; injecting cookies into apps requires root",
+    "ใส่คุกกี้ที่ใช้ได้ %d ตัวลงแอป (แอปจะถูก force-stop)?": "Inject %d valid cookie(s) into the apps (apps will be force-stopped)?",
+    "คุกกี้หมดอายุ": "Cookie expired",
+    "ส่งถี่เกินไป รอสักพัก": "Sending too fast; wait a moment",
+    "(เนื้อหาตอบกลับว่าง)": "(empty response body)",
+    "ส่งโทเคนซ้ำแล้วยังไม่ผ่าน": "Resent the token but it still failed",
+    "เซิร์ฟเวอร์ไม่ส่งโทเคนมา": "The server didn't send a token",
+    "บล็อก": "Block",
+    "ส่งคำขอเป็นเพื่อน": "Send friend request",
+    "เลิกบล็อก": "Unblock",
+    "บล็อกอยู่แล้ว (ตรวจจากรายการบล็อก)": "Already blocked (checked from the block list)",
+    "ไม่ได้บล็อกอยู่ ไม่ต้องทำอะไร": "Not blocked; nothing to do",
+    " [ตรวจรายการบล็อกแล้ว: ": " [checked the block list: ",
+    "บล็อกอยู่": "blocked",
+    "ไม่ได้บล็อก": "not blocked",
+    "โดนจำกัดความถี่ (429) รอ %d วินาทีแล้วลองใหม่...": "Rate limited (429); waiting %d seconds then retrying...",
+    "%s: คุกกี้ใช้ไม่ได้ (%s)": "%s: cookie unusable (%s)",
+    "เลือกบัญชี (เช่น 1,3 หรือ all, Enter=all):": "Choose accounts (e.g. 1,3 or all, Enter=all):",
+    "เป็นบัญชีเดียวกับเป้าหมาย ข้าม": "Same account as the target; skipped",
+    "ผล": "Result",
+    "เลือกเป้าหมายจาก: 1=บัญชีในคุกกี้, 2=พิมพ์ชื่อ/ID Roblox (Enter=1):": "Choose the target from: 1=account in cookies, 2=type a Roblox name/ID (Enter=1):",
+    "เลือกเลขบัญชีเป้าหมาย (ตามตารางด้านบน):": "Choose the target account number (from the table above):",
+    "ชื่อผู้ใช้หรือ User ID เป้าหมาย:": "Target username or User ID:",
+    "ต้องมีบัญชีที่ใช้ได้อย่างน้อย 2 บัญชี": "Need at least 2 usable accounts",
+    "บล็อกกันเอง %d บัญชี (%d การบล็อก) ใช้เวลาประมาณ %d นาที?": "Mutual block between %d accounts (%d blocks), takes about %d min?",
+    "กำลังอ่านรายการบล็อกของแต่ละบัญชี...": "Reading each account's block list...",
+    "รอบ %d/%d": "Round %d/%d",
+    "%s: ส่งถี่เกิน (429) รอ 60 วินาทีแล้วลองใหม่": "%s: rate limited (429); waiting 60 seconds then retrying",
+    "หยุดแล้ว (Ctrl+C) สรุปเท่าที่ทำไปแล้ว": "Stopped (Ctrl+C); summary of what was done so far",
+    "บล็อกใหม่ %d | บล็อกอยู่แล้ว %d | ล้ม %d": "New blocks %d | already blocked %d | failed %d",
+    "...และอีก %d รายการ": "...and %d more",
+    "ไม่มีคู่ไหนบล็อกกันอยู่ ไม่ต้องทำอะไร": "No pair is blocking each other; nothing to do",
+    "ปลดบล็อกกันเอง %d คู่ (ทิศทาง) ใช้เวลาประมาณ %d นาที?": "Mutual unblock of %d pair(s) (directions), takes about %d min?",
+    "ปลดบล็อก %d | ไม่ได้บล็อกอยู่ %d | ล้ม %d": "Unblocked %d | not blocked %d | failed %d",
+    "เปิด Roblox %d อินสแตนซ์ ห่างกันตัวละ %d วินาที?": "Open Roblox on %d instance(s), %d seconds apart?",
+    "รอ %d วินาทีก่อนเปิดตัวถัดไป...": "Waiting %d seconds before opening the next one...",
+    "หยุดแล้ว (Ctrl+C)": "Stopped (Ctrl+C)",
+    "เปิดสำเร็จ %d/%d อินสแตนซ์": "Opened %d/%d instances successfully",
+    "ปิดแอปอื่นไม่ได้ถ้าไม่มีรูท (force-stop ต้องใช้สิทธิ์รูท)": "Can't close other apps without root (force-stop needs root)",
+    "ปิด Roblox ทั้งหมด %d อินสแตนซ์ (ทุกตัวที่สแกนเจอ ไม่ใช่เฉพาะที่เลือก)?": "Close Roblox on all %d instances (every one found by the scan, not just the selected)?",
+    "ไม่อนุญาตให้ปิดแอปนี้": "Closing this app is not allowed",
+    "ปิดแล้ว": "closed",
+    "ปิดสำเร็จ %d/%d อินสแตนซ์": "Closed %d/%d instances successfully",
+    "เปิด Roblox ทุกอินสแตนซ์ที่เลือกตอนนี้ (ทีละตัว ไม่ force-stop)": "Open Roblox on every selected instance now (one at a time, no force-stop)",
+    "หน่วงระหว่างตัว (วินาที, 0-600)": "Delay between instances (seconds, 0-600)",
+    "ปิด Roblox ทั้งหมด (force-stop ทุกอินสแตนซ์ที่สแกนเจอ ต้องใช้รูท)": "Close all Roblox (force-stop every scanned instance; root required)",
+    "ค่าหน่วงใหม่ (0-600):": "New delay (0-600):",
+    "ค่าต้องอยู่ระหว่าง 0-600": "Value must be between 0-600",
+    "ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)": "No cookies in cookie.txt yet (menu 5)",
+    "กำลังตรวจบัญชีจากคุกกี้...": "Checking accounts from cookies...",
+    "บล็อก / เพื่อน (ด้วยบัญชีจากคุกกี้)": "Block / friends (using accounts from cookies)",
+    "บล็อกผู้ใช้": "Block a user",
+    "เลิกบล็อกผู้ใช้": "Unblock a user",
+    "เพิ่มเพื่อน (ส่งคำขอไปยังผู้ใช้)": "Add friend (send a request to a user)",
+    "เพิ่มเพื่อนระหว่างบัญชีของเราเอง (ส่งคำขอ + กดรับให้อัตโนมัติ)": "Add friends among our own accounts (send request + auto-accept)",
+    "บล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้บล็อกกันเอง ไม่ต้องเลือกเป้าหมาย)": "Block each other, all (every cookie account blocks the others; no target needed)",
+    "ปลดบล็อกกันเองทั้งหมด (ทุกบัญชีในคุกกี้ปลดบล็อกกันเอง เฉพาะคู่ที่บล็อกกันอยู่)": "Unblock each other, all (every cookie account unblocks the others; only pairs currently blocked)",
+    "ไม่พบเป้าหมายนี้": "Target not found",
+    "%s %s (%d) ด้วย %d บัญชี?": "%s %s (%d) with %d account(s)?",
+    "ต้องเลือกอย่างน้อย 2 บัญชี": "Select at least 2 accounts",
+    "เพิ่มเพื่อนระหว่าง %d บัญชี?": "Add friends among %d accounts?",
+    "การดึงคุกกี้จากแอปต้องใช้สิทธิ์รูท": "Pulling cookies from the apps requires root",
+    "กำลังอ่านคุกกี้จากแอป %d อินสแตนซ์ แล้วตรวจกับ Roblox API...": "Reading cookies from %d instance apps, then checking with the Roblox API...",
+    "คุกกี้ที่ดึงจากแอป Roblox": "Cookies pulled from Roblox apps",
+    "ดึงได้ ใช้ได้: ": "Pulled, valid: ",
+    "บันทึก %d ตัวลง cookie.txt (แทนที่บรรทัดของอินสแตนซ์นั้น)?": "Save %d to cookie.txt (replacing that instance's line)?",
+    "บันทึกแล้ว %d บรรทัด → ": "Saved %d line(s) → ",
+    "ตอนรีจอยจะใช้คุกกี้เหล่านี้เช็คสถานะในเกมผ่าน API (เปิด \"ตรวจสถานะในเกมผ่าน Roblox API\" ที่เมนู 6)": "When rejoining, these cookies are used to check in-game status via the API (turn on \"Check in-game status via Roblox API\" at menu 6)",
+    "ค่าใหม่ (ตัวเลข):": "New value (number):",
+    "ไม่ตั้ง": "not set",
+    "%d บัญชี, ค่าเริ่มต้น %s": "%d account(s), default %s",
+    "ไม่แตะ": "untouched",
+    "ค่าต้องอยู่ระหว่าง %d-%d": "Value must be between %d-%d",
+    "%s: ดึงคุกกี้จากแอปไม่ได้ (%s)": "%s: can't pull the cookie from the app (%s)",
+    "ไม่รูท: ดึงคุกกี้จากแอปไม่ได้ ใช้เฉพาะคุกกี้ใน cookie.txt": "Non-root: can't pull cookies from apps; only cookies in cookie.txt are used",
+    "ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5) และไม่รูทจึงดึงจากแอปไม่ได้": "No cookies in cookie.txt (menu 5) and non-root, so they can't be pulled from the apps",
+    "กำลังดึงคุกกี้จากทุกแอป แล้วอ่าน Roblox ID...": "Pulling cookies from all apps, then reading Roblox IDs...",
+    "ไม่พบบัญชีที่ใช้ได้": "No usable accounts found",
+    "สคริปต์ใหม่จะมีผลตอนเข้าเกมครั้งถัดไป (รีจอยหรือเปิดเกมใหม่) ต้องมี setfpscap ในเอ็กซิคิวเตอร์": "The new script takes effect the next time you join a game (rejoin or relaunch); the executor needs setfpscap",
+    "FPS cap ต่อบัญชี (จับคู่ด้วย Roblox ID)": "FPS cap per account (matched by Roblox ID)",
+    "ตั้งเท่ากันทุกบัญชีในตาราง": "Set the same value for every account in the table",
+    "ค่าเริ่มต้นของบัญชีที่ไม่อยู่ในตาราง (0=ไม่แตะ)": "Default for accounts not in the table (0=untouched)",
+    "ล้างค่าทั้งหมด": "Clear everything",
+    "FPS cap ของ %s (%d-%d, Enter=ล้าง):": "FPS cap for %s (%d-%d, Enter=clear):",
+    "FPS cap สำหรับทุกบัญชี (%d-%d, Enter=ล้าง):": "FPS cap for all accounts (%d-%d, Enter=clear):",
+    "ค่าเริ่มต้น (%d-%d, 0 หรือ Enter=ไม่แตะ):": "Default (%d-%d, 0 or Enter=untouched):",
+    "ล้าง FPS cap ทั้งหมด?": "Clear all FPS caps?",
+    "Heartbeat (สคริปต์ในเกม ส่งสัญญาณมาที่เครื่องมือ)": "Heartbeat (in-game script that signals the tool)",
+    "เปิดใช้ heartbeat (เปิดเมื่อติดตั้งสคริปต์ในทุกโคลนแล้ว)": "Enable heartbeat (turn on once the script is installed in every clone)",
+    "พอร์ตรับสัญญาณ (127.0.0.1)": "Listening port (127.0.0.1)",
+    "สคริปต์ส่งทุก (วินาที)": "Script sends every (seconds)",
+    "ถือว่าหยุดส่งเมื่อเงียบเกิน (วินาที)": "Treat as stopped when silent for more than (seconds)",
+    "โฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ (Delta / Arceus X, ใส่ {pkg} = แยกโฟลเดอร์ต่อโคลน)": "Executor autoexec folder (Delta / Arceus X; put {pkg} = separate folder per clone)",
+    "สร้าง/อัปเดต heartbeat.lua ในโฟลเดอร์นั้นอัตโนมัติ": "Auto create/update heartbeat.lua in those folders",
+    "แสดงตัวเลข FPS บนจอเกม (ลากได้ ไม่มีกรอบ ปรับขนาดตามจอ)": "Show the FPS number in the game (draggable, no frame, scales with the screen)",
+    "FPS cap ต่อบัญชี (ดึง Roblox ID จากคุกกี้) ...": "FPS cap per account (pull Roblox ID from cookies) ...",
+    "กราฟิกในเกม ระดับ (1-10, 0=ไม่แตะ)": "In-game graphics level (1-10, 0=untouched)",
+    "ระดับเสียงในเกม (0-100, - = ไม่แตะ)": "In-game volume (0-100, - = untouched)",
+    "เปิด Reduce Motion ในเกม": "Enable Reduce Motion in game",
+    "เช็ก heartbeat ทีละบัญชี: รอแต่ละบัญชีนานสุด (วินาที) ไม่เจอ = รีจอย": "Check heartbeat one account at a time: max wait per account (seconds); not found = rejoin",
+    "สร้างแล้ว: ": "Created: ",
+    "คัดลอกไฟล์ของแต่ละโคลนไปไว้ในโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ในโคลนนั้น (หรือรันตอนเข้าเกม)": "Copy each clone's file into that clone's executor autoexec folder (or run it when joining a game)",
+    "พาธโฟลเดอร์ autoexec (Enter=ไม่เปลี่ยน, คั่นหลายโฟลเดอร์ด้วยคอมมา):": "autoexec folder path (Enter=keep, separate multiple folders with commas):",
+    "สคริปต์ใหม่จะโหลดตอนเข้าเกมครั้งถัดไป (รีจอยหรือเปิดเกมใหม่)": "The new script loads the next time you join a game (rejoin or relaunch)",
+    "ระดับกราฟิก (0-10, 0=ไม่แตะ):": "Graphics level (0-10, 0=untouched):",
+    "ค่าต้องอยู่ระหว่าง 0-10": "Value must be between 0-10",
+    "ระดับเสียง (0-100, - = ไม่แตะ):": "Volume (0-100, - = untouched):",
+    "ค่าต้องอยู่ระหว่าง 0-100 หรือ -": "Value must be between 0-100 or -",
+    "ประสิทธิภาพ: ล้างแรม / ลดการใช้ CPU": "Performance: clear RAM / lower CPU use",
+    "ล้างแรมอัตโนมัติ (เฉพาะรูท)": "Auto clear RAM (root only)",
+    "ล้างแรมทุก (นาที, 0=ไม่ล้างตามเวลา)": "Clear RAM every (minutes, 0=no timed clearing)",
+    "ล้างเมื่อแรมว่างต่ำกว่า (MB, 0=ปิด)": "Clear when free RAM drops below (MB, 0=off)",
+    "ปิดแอปพื้นหลังที่ cached (am kill รายแอป เฉพาะแอปที่ไม่ได้ป้องกัน ไม่แตะ Termux/โคลน)": "Kill cached background apps (am kill per app; only unprotected apps; doesn't touch Termux/clones)",
+    "ปิดแอปอื่นที่ไม่เกี่ยวข้องแบบปลอดภัย (force-stop แอปที่ติดตั้งเอง เว้น Roblox/Termux/Delta และรายชื่อข้อ 6)": "Safely close unrelated apps (force-stop user-installed apps, except Roblox/Termux/Delta and the list in item 6)",
+    "รายชื่อแอปที่ห้ามปิด (ส่วนของชื่อแพ็กเกจ)": "Apps that must never be closed (part of the package name)",
+    "โหมดประหยัด CPU (ลดความสำคัญโปรเซส, เก็บสถานะเกมไว้ 60 วินาที, รีเฟรชจอช้าลง)": "CPU-saving mode (lower process priority, keep game state for 60 seconds, slower screen refresh)",
+    "รีเฟรชแผงสถานะทุก (วินาที, ใช้เมื่อเปิดโหมดประหยัด CPU)": "Refresh the status panel every (seconds, used when CPU-saving mode is on)",
+    "ล้างแรมเดี๋ยวนี้": "Clear RAM now",
+    "  (โหมดไม่รูทล้างแรมไม่ได้)": "  (non-root mode can't clear RAM)",
+    "RAM ว่างตอนนี้: %s MB%s": "Free RAM now: %s MB%s",
+    "รายชื่อที่ห้ามปิด คั่นด้วยคอมมา (Enter=คงเดิม):": "Protected list, comma-separated (Enter=keep):",
+    "ล้างแรมแล้ว: ว่าง %s → %s MB": "RAM cleared: free %s → %s MB",
+    "ล้างแรมไม่สำเร็จ: ": "RAM clear failed: ",
+    "ผลแต่ละขั้น: ": "Result of each step: ",
+    "แรมว่างแทบไม่เพิ่ม: drop_caches ล้างได้เฉพาะแคช ไม่ใช่แรมที่แอปใช้อยู่": "Free RAM barely increased: drop_caches only clears cache, not the RAM apps are using",
+    "ลองเปิดข้อ 5 (ปิดแอปอื่นแบบปลอดภัย) เมื่อ drop_caches ถูกล็อก (มักเป็นตู้คลาวด์/คอนเทนเนอร์)": "Try turning on item 5 (safely close other apps) when drop_caches is locked (often cloud phones/containers)",
+    "หยุดทำงาน": "Stopped",
+    "หลุด/ค้าง": "Dropped/hung",
+    "เริ่มทำงาน": "Started",
+    "รายงานสถานะ+ภาพหน้าจอเป็นรอบ": "Periodic status + screenshot report",
+    "แจ้งเตือนผิดปกติ (รีจอยถี่/แรมต่ำ)": "Anomaly alert (frequent rejoins / low RAM)",
+    "ต้องยืนยัน Captcha/FaceID": "Captcha/FaceID required",
+    "บัญชีถูกจำกัด/แบน": "Account restricted/banned",
+    "แจ้งเตือน: ": "Notify: ",
+    "แนบภาพหน้าจอ (รูทเท่านั้น, เก็บล่าสุด %d รูป)": "Attach screenshot (root only, keep the latest %d)",
+    "ส่งรายงานสถานะ+ภาพหน้าจอทุกกี่นาที (0=ปิด)": "Send status + screenshot every N minutes (0=off)",
+    "(ใช้ URL หลัก)": "(using main URL)",
+    "Console webhook: URL (ว่าง = ใช้ URL หลัก)": "Console webhook: URL (empty = use main URL)",
+    "Console webhook: ส่งบันทึกคอนโซลเข้า Discord": "Console webhook: send the console log to Discord",
+    "Console webhook: รวมส่งทุก (วินาที, 3-300)": "Console webhook: batch and send every (seconds, 3-300)",
+    "ทดสอบ Console webhook": "Test Console webhook",
+    "(ว่าง)": "(empty)",
+    "วาง URL Webhook (Enter=ลบ):": "Paste Webhook URL (Enter=delete):",
+    "รูปแบบ URL ไม่ถูกต้อง": "Invalid URL format",
+    "ทุกกี่นาที (0-1440):": "Every how many minutes (0-1440):",
+    "ต้องเป็นตัวเลข 0-1440": "Must be a number 0-1440",
+    "วาง URL Console webhook (Enter=ใช้ URL หลัก):": "Paste Console webhook URL (Enter=use main URL):",
+    "ค่าใหม่ (3-300):": "New value (3-300):",
+    "ต้องเป็นตัวเลข 3-300": "Must be a number 3-300",
+    "Discord User ID (ตัวเลข) หรือ @everyone / @here (Enter=ลบ):": "Discord User ID (number) or @everyone / @here (Enter=delete):",
+    "รูปแบบไม่ถูกต้อง": "Invalid format",
+    "ชื่ออุปกรณ์ (Enter=ลบ):": "Device name (Enter=delete):",
+    "ยังไม่มี URL (ตั้ง URL หลักหรือ Console URL ก่อน)": "No URL yet (set the main URL or Console URL first)",
+    "GARNT TOOL REJOIN: ทดสอบ console webhook ✅": "GARNT TOOL REJOIN: console webhook test ✅",
+    "ส่งไม่สำเร็จ ตรวจสอบ URL": "Send failed; check the URL",
+    "เชื่อมต่อสำเร็จ": "Connected successfully",
+    "✅ ทดสอบ Webhook": "✅ Webhook test",
+    "กำลังดึงชื่อบัญชี / Roblox ID จากคุกกี้...": "Fetching account names / Roblox IDs from cookies...",
+    "รายการอินสแตนซ์ (%d)": "Instances (%d)",
+    "เลือกรัน %d/%d | คุกกี้ในไฟล์ %d บรรทัด | ลิงก์เกม: %s": "Selected %d/%d | cookies in file %d lines | game link: %s",
+    "v%s -> v%s  (เมนู 11 หรือ python rejoin.py update)": "v%s -> v%s  (menu 11 or python rejoin.py update)",
+    "🆕 มีเวอร์ชันใหม่": "🆕 New version available",
+    "เวอร์ชันปัจจุบัน v%s กำลังเช็คเวอร์ชันบน GitHub...": "Current version v%s; checking the version on GitHub...",
+    "ต่อ GitHub ไม่ได้: %s": "Can't reach GitHub: %s",
+    "โหลดไม่สำเร็จ HTTP %d": "Download failed HTTP %d",
+    "ไฟล์บน GitHub ไม่มี VERSION ไม่อัปเดต": "The file on GitHub has no VERSION; not updating",
+    "ตัวนี้เป็นเวอร์ชันล่าสุดแล้ว (v%s) ไม่ต้องอัปเดต": "This is already the latest version (v%s); no update needed",
+    "เครื่องใหม่กว่า GitHub (เครื่อง v%s / GitHub v%s) ไม่ลดเวอร์ชัน": "This machine is newer than GitHub (local v%s / GitHub v%s); not downgrading",
+    "ไฟล์ใหม่มีโค้ดพัง (%s) ไม่อัปเดต": "The new file has broken code (%s); not updating",
+    "เขียนไฟล์ไม่ได้: %s": "Can't write the file: %s",
+    "อัปเดตแล้ว v%s -> v%s (เก็บของเก่าไว้ที่ %s.bak) รันโปรแกรมใหม่เพื่อใช้เวอร์ชันนี้": "Updated v%s -> v%s (old one kept at %s.bak); restart the program to use this version",
+    "ไม่พบไฟล์สำรอง %s.bak (ยังไม่เคยอัปเดต?)": "Backup file %s.bak not found (never updated?)",
+    "ไฟล์สำรองใช้ไม่ได้: %s": "Backup file unusable: %s",
+    "ย้อนกลับไม่ได้: %s": "Can't roll back: %s",
+    "ย้อนกลับเป็น v%s แล้ว (เวอร์ชันที่เพิ่งใช้อยู่ถูกเก็บเป็น .bak) รันโปรแกรมใหม่เพื่อใช้งาน": "Rolled back to v%s (the version you were just using is kept as .bak); restart the program to use it",
+    "1) อัปเดตจาก GitHub   2) ย้อนกลับเป็นเวอร์ชันก่อนหน้า (.bak)   0) กลับ": "1) Update from GitHub   2) Roll back to the previous version (.bak)   0) Back",
+    "เลือก (Enter=1):": "Choose (Enter=1):",
+    "ย้อนกลับเป็นไฟล์สำรอง?": "Roll back to the backup file?",
+    "จำนวนคอร์": "Core count",
+    "รุ่น CPU": "CPU model",
+    "สถาปัตยกรรม": "Architecture",
+    "ความเร็ว (ตอนนี้ / สูงสุด)": "Speed (now / max)",
+    "กำลังทดสอบ CPU 1 คอร์ (%d วินาที) ...": "Testing CPU, 1 core (%d seconds) ...",
+    "คะแนน 1 คอร์": "1-core score",
+    "กำลังทดสอบ CPU ทุกคอร์ (%d คอร์ x %d วินาที) ...": "Testing CPU, all cores (%d cores x %d seconds) ...",
+    "ทดสอบหลายคอร์": "Multi-core test",
+    "คะแนนทุกคอร์": "All-core score",
+    "x%.2f จาก %d คอร์ (เต็ม = x%d)": "x%.2f from %d cores (full = x%d)",
+    "ประสิทธิภาพเพิ่มขึ้น": "Performance gain",
+    "CPU ใช้งานระหว่างเทส": "CPU usage during the test",
+    "ได้ไม่ถึง 60% ของคอร์ที่มี: อาจโดนจำกัด CPU / แชร์เครื่องกับคนอื่น / มีแอปอื่นกินอยู่": "Got under 60% of the available cores: you may be CPU-throttled / sharing the host with others / other apps are using it",
+    "RAM ทั้งหมด": "Total RAM",
+    "RAM ว่าง": "Free RAM",
+    "ใช้ไปแล้ว": "Used",
+    "Swap (ใช้/ทั้งหมด)": "Swap (used/total)",
+    "กำลังทดสอบความเร็วแรม (บล็อก %d MB) ...": "Testing RAM speed (%d MB block) ...",
+    "จองแรม + แตะทุกหน้า": "Allocate RAM + touch every page",
+    "เขียน": "Write",
+    "คัดลอก": "Copy",
+    "ตรวจความถูกต้องของข้อมูล": "Data integrity check",
+    "ผ่าน": "Pass",
+    "ไม่ผ่าน ⚠ แรมอาจมีปัญหา": "Fail ⚠ RAM may have a problem",
+    "จองแรมไม่ได้ (MemoryError)": "Can't allocate RAM (MemoryError)",
+    "ทดสอบความเร็ว": "Speed test",
+    "ไม่สำเร็จ: %s": "Failed: %s",
+    "อ่านไม่ได้ (dumpsys SurfaceFlinger ต้องใช้สิทธิ์ ลองโหมดรูท)": "Unreadable (dumpsys SurfaceFlinger needs permission; try root mode)",
+    "OpenGL ES ที่รองรับ": "Supported OpenGL ES",
+    "ไดรเวอร์ EGL": "EGL driver",
+    "แพลตฟอร์ม": "Platform",
+    "ดูเหมือนเป็นซอฟต์แวร์เรนเดอร์ (ไม่มี GPU จริง) กราฟิกจะกิน CPU และช้ากว่ามาก": "Looks like a software renderer (no real GPU); graphics will use the CPU and be much slower",
+    "⚠ คำเตือน": "⚠ Warning",
+    "กำลังวัดโหลด GPU 5 วินาที ...": "Measuring GPU load for 5 seconds ...",
+    "โหลด GPU (เฉลี่ย / สูงสุด)": "GPU load (avg / max)",
+    "อ่านไม่ได้ (เครื่องนี้ไม่เปิด sysfs ของ GPU ให้อ่าน)": "Unreadable (this device doesn't expose the GPU sysfs)",
+    "โหลด GPU": "GPU load",
+    "ความเร็ว GPU": "GPU speed",
+    "Termux สร้างงานกราฟิกจริงไม่ได้ จึงวัดได้แค่ข้อมูล + โหลด; วัดคะแนนจริงใช้ GFXBench / 3DMark": "Termux can't run real graphics workloads, so only info + load can be measured; for real scores use GFXBench / 3DMark",
+    "ทดสอบ CPU": "CPU test",
+    "ทดสอบ GPU": "GPU test",
+    "ทดสอบ RAM": "RAM test",
+    "เทสเครื่อง Cloud Phone": "Cloud phone benchmark",
+    "CPU — ข้อมูลคอร์ + คะแนน 1 คอร์ / ทุกคอร์": "CPU — core info + 1-core / all-core score",
+    "RAM — ความจุ + ความเร็วเขียน/คัดลอก + ตรวจความถูกต้อง": "RAM — capacity + write/copy speed + integrity check",
+    "GPU — รุ่น/ไดรเวอร์ + โหลด (ถ้าอ่านได้)": "GPU — model/driver + load (if readable)",
+    "ทดสอบทั้งหมด (ใช้เวลาราว 30 วินาที)": "Test everything (takes about 30 seconds)",
+    "แนะนำ: หยุดรีจอย/ปิดเกมก่อนเทส เพื่อให้ผลไม่เพี้ยน": "Tip: stop rejoining / close the game before testing so the results aren't skewed",
+    "ยกเลิกการทดสอบ": "Test cancelled",
+    "ไฟล์ไม่ใช่ค่าตั้งค่า": "File is not a settings file",
+    "ยังไม่มีไฟล์ log": "No log file yet",
+    "เปิดการแจ้งเตือนผิดปกติ": "Enable anomaly alerts",
+    "หลุด/ค้างกี่ครั้งถึงแจ้ง (2-50)": "Drops/hangs before alerting (2-50)",
+    "ภายในกี่นาที (1-1440)": "Within how many minutes (1-1440)",
+    "เว้นกี่นาทีก่อนแจ้งซ้ำ (1-1440)": "Minutes before alerting again (1-1440)",
+    "แจ้งเมื่อแรมว่างต่ำกว่า MB (0=ใช้ค่าของล้างแรม)": "Alert when free RAM is below (MB, 0=use the RAM-clear value)",
+    "แจ้งเตือนผิดปกติ (ส่งเข้า Discord ผ่านเหตุการณ์ \"แจ้งเตือนผิดปกติ\" ในเมนู 7)": "Anomaly alerts (sent to Discord via the \"Anomaly alert\" event in menu 7)",
+    "สำรอง/กู้ค่า + log + แจ้งเตือน": "Backup/restore + logs + alerts",
+    "สำรองค่าตั้งค่า (config.json -> backup/)": "Back up settings (config.json -> backup/)",
+    "กู้ค่าตั้งค่าจากไฟล์สำรอง": "Restore settings from a backup file",
+    "ดู log ล่าสุด 30 บรรทัด": "View the latest 30 log lines",
+    "สรุปรีจอย/หลุดต่ออินสแตนซ์ (ย้อนหลัง N ชั่วโมง)": "Rejoin/drop summary per instance (last N hours)",
+    "ตั้งค่าแจ้งเตือนผิดปกติ (รีจอยถี่ / แรมต่ำ)": "Anomaly alert settings (frequent rejoin / low RAM)",
+    "สำรองแล้ว: ": "Backed up: ",
+    "ไฟล์นี้มี URL Webhook และ token บอท Telegram อยู่ ห้ามแชร์ให้ใคร (คุกกี้ไม่ได้อยู่ในไฟล์นี้)": "This file contains the Webhook URL and the Telegram bot token; don't share it with anyone (cookies are not in this file)",
+    "สำรองไม่ได้: %s": "Backup failed: %s",
+    "ยังไม่มีไฟล์สำรองใน ": "No backup files yet in ",
+    "เลือกไฟล์ (0=ยกเลิก):": "Choose a file (0=cancel):",
+    "กู้ค่าจาก %s (ค่าปัจจุบันจะถูกสำรองไว้ก่อน)?": "Restore from %s (current settings will be backed up first)?",
+    "กู้ค่าแล้ว": "Restored",
+    "กู้ไม่ได้: %s": "Restore failed: %s",
+    "ย้อนหลังกี่ชั่วโมง (1-168, Enter=24):": "Hours back (1-168, Enter=24):",
+    "ไม่พบเหตุการณ์หลุด/รีจอยใน %d ชั่วโมงที่ผ่านมา": "No drop/rejoin events in the last %d hours",
+    "สรุปย้อนหลัง %d ชั่วโมง": "Summary of the last %d hours",
+    "สาเหตุบ่อยสุด": "Most common cause",
+    "อินสแตนซ์": "Instance",
+    "ล็อกเอาต์ต้องใช้สิทธิ์รูท": "Logout requires root",
+    "เลือกแพ็กเกจที่จะล็อกเอาต์ เช่น 1,3 | all=ทั้งหมด | 0=ยกเลิก:": "Choose packages to log out, e.g. 1,3 | all=everything | 0=cancel:",
+    "ล็อกเอาต์ %d แพ็กเกจ (แอปจะถูก force-stop และคุกกี้ในแอปถูกลบ)?": "Log out %d package(s) (apps will be force-stopped and in-app cookies deleted)?",
+    "ไฟล์ cookie.txt ไม่ถูกแก้ไข (ใส่คุกกี้กลับได้จากเมนูนี้ข้อ 1)": "cookie.txt was not modified (you can inject the cookies back from item 1 of this menu)",
+    "นำเข้าสคริปต์ของคุณลงโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ทุกตัวที่ติดตั้งอยู่": "Import your script into the autoexec folder of every installed executor",
+    "  1) วางโค้ดเอง   2) อ่านจากไฟล์   3) ดาวน์โหลดจากลิงก์ https   4) ลบสคริปต์ที่นำเข้าไว้": "  1) Paste code   2) Read from file   3) Download from an https link   4) Delete imported scripts",
+    "เลือก (0=กลับ):": "Choose (0=back):",
+    "ชื่อไฟล์ (.lua/.txt, Enter=custom.lua):": "File name (.lua/.txt, Enter=custom.lua):",
+    "ไม่พบไฟล์ที่นำเข้าด้วยชื่อนี้ (ไฟล์ที่ไม่ใช่ของเครื่องมือจะไม่ถูกลบ)": "No imported file with this name (files not made by the tool are never deleted)",
+    "วางโค้ด แล้วพิมพ์ END ในบรรทัดใหม่เพื่อจบ": "Paste the code, then type END on a new line to finish",
+    "พาธไฟล์:": "File path:",
+    "อ่านไฟล์ไม่ได้: %s": "Can't read the file: %s",
+    "ลิงก์ https:": "https link:",
+    "รองรับเฉพาะลิงก์ https": "Only https links are supported",
+    "ดาวน์โหลดไม่สำเร็จ: %s": "Download failed: %s",
+    "ตรวจโค้ดที่ดาวน์โหลดมาให้แน่ใจก่อนใช้ (สคริปต์จะรันในเกมของทุกบัญชี)": "Review the downloaded code before using it (the script will run in every account's game)",
+    "ไม่มีโค้ด": "No code",
+    "ข้าม (มีไฟล์ชื่อนี้ที่ไม่ใช่ของเครื่องมือ)": "skipped (a file with this name exists that isn't the tool's)",
+    "ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ที่ติดตั้งอยู่ (ตั้งที่ เมนู 6 > Heartbeat > 6)": "No installed executor's autoexec folder found (set it at menu 6 > Heartbeat > 6)",
+    "ตัวเปิด/ปิดฟีเจอร์ตรวจแบน, หยุดเมื่อเจอ Captcha, สลับบัญชี, รีจอยทุกตัวเมื่อหลุด อยู่ที่ เมนู 6": "The toggles for ban check, pause on Captcha, account switching and rejoin-all-on-drop are in menu 6",
+    "ค่าใหม่ (%d-%d):": "New value (%d-%d):",
+    "วาง Bot token จาก @BotFather (Enter=ลบ):": "Paste the Bot token from @BotFather (Enter=delete):",
+    "รูปแบบ token ไม่ถูกต้อง": "Invalid token format",
+    "Chat ID ของคุณ (ตัวเลข, ส่งข้อความหาบอท @userinfobot เพื่อดู):": "Your Chat ID (a number; message the bot @userinfobot to find it):",
+    "ต้องเป็นตัวเลข": "Must be a number",
+    "ตั้ง token และ Chat ID ก่อน": "Set the token and Chat ID first",
+    "GARNT TOOL REJOIN: ทดสอบบอท ✅\n": "GARNT TOOL REJOIN: bot test ✅\n",
+    "ส่งสำเร็จ": "Sent successfully",
+    "ส่งไม่สำเร็จ ตรวจสอบ token / Chat ID (ต้องกด Start กับบอทก่อน)": "Send failed; check the token / Chat ID (you must press Start on the bot first)",
+    "ไม่พบ Java และไม่มีคำสั่ง pkg (ไม่ใช่ Termux?) ข้ามการติดตั้ง": "Java not found and no pkg command (not Termux?); skipping install",
+    "ไม่พบ Java กำลังติดตั้ง openjdk-17 (ครั้งเดียว อาจใช้เวลาสักครู่)...": "Java not found; installing openjdk-17 (one time, may take a moment)...",
+    "ติดตั้ง Java สำเร็จ": "Java installed",
+    "ติดตั้ง Java ไม่สำเร็จ ลองเอง: pkg install openjdk-17": "Java install failed; try it yourself: pkg install openjdk-17",
+    "เขียน /sdcard/Download ไม่ได้ (ยังไม่อนุญาตที่เก็บข้อมูล?) ใช้โฟลเดอร์สำรอง: ": "Can't write /sdcard/Download (storage permission not granted?); using the fallback folder: ",
+    "กำลังสแกนแพ็กเกจ...": "Scanning packages...",
+    "เริ่มอัตโนมัติใน 5 วินาที (Ctrl+C เพื่อยกเลิก)": "Starting automatically in 5 seconds (Ctrl+C to cancel)",
+    "ลาก่อน!": "Goodbye!",
+    "\nออกจากโปรแกรม": "\nExiting the program",
+})
+
+EN.update({
+    "ตรวจระบบ (สิทธิ์ / รูท / ลิงก์ / พอร์ต / autoexec / เน็ต)": "System check (permissions / root / link / port / autoexec / network)",
+    "ตรวจระบบ": "System check",
+    "ผ่าน": "Pass",
+    "ที่เก็บข้อมูล /sdcard/Download เขียนได้": "/sdcard/Download is writable",
+    "เขียน /sdcard/Download ไม่ได้ ตอนนี้ใช้โฟลเดอร์สำรอง (กดอนุญาตที่เก็บข้อมูลให้ Termux)": "Can't write /sdcard/Download; using the fallback folder (allow storage for Termux)",
+    "โหมดรูท (su ใช้ได้)": "Root mode (su works)",
+    "ไม่รูท: ใช้ได้แต่ตรวจโปรเซส/หน้าจอ/ใส่คุกกี้ไม่ได้": "Non-root: works, but can't check process/foreground or inject cookies",
+    "พบแพ็กเกจ Roblox %d ตัว": "Found %d Roblox package(s)",
+    "ยังไม่พบแพ็กเกจ Roblox (เมนู 4)": "No Roblox packages found (menu 4)",
+    "ตั้งลิงก์เกมครบทุกแพ็กเกจ": "Game link set for every package",
+    "ยังไม่ตั้งลิงก์เกม หรือลิงก์ผิดรูปแบบ (เมนู 3)": "Game link missing or invalid (menu 3)",
+    "มีคำสั่ง termux-wake-lock": "termux-wake-lock is available",
+    "ไม่มี termux-wake-lock (ติดตั้ง Termux:API เพื่อกันเครื่องหลับ)": "termux-wake-lock missing (install Termux:API to keep the device awake)",
+    "มี Java": "Java is installed",
+    "ไม่มี Java (pkg install openjdk-17)": "Java missing (pkg install openjdk-17)",
+    "พอร์ต heartbeat %d ว่าง": "Heartbeat port %d is free",
+    "พอร์ต heartbeat %d ถูกใช้อยู่ (เครื่องมืออื่นรันอยู่ หรือเปลี่ยนพอร์ตที่เมนู 6)": "Heartbeat port %d is in use (another instance is running, or change it in menu 6)",
+    "พบโฟลเดอร์ autoexec %d โฟลเดอร์": "Found %d autoexec folder(s)",
+    "ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ (heartbeat จะไม่ถูกติดตั้งอัตโนมัติ)": "No executor autoexec folder found (heartbeat won't be installed automatically)",
+    "ต่อเน็ต/Roblox ได้": "Internet/Roblox reachable",
+    "ต่อ Roblox ไม่ได้: %s": "Can't reach Roblox: %s",
+    "ตั้ง Discord webhook แล้ว": "Discord webhook is set",
+    "ยังไม่ตั้ง Discord webhook (ไม่บังคับ)": "Discord webhook not set (optional)",
+    "สรุป: ผ่าน %d | เตือน %d": "Summary: %d OK | %d warning(s)",
+    "🛡️ Watchdog: เครื่องมือถูกปิด/ล่ม (รหัส %d) กำลังเริ่มใหม่": "🛡️ Watchdog: the tool was killed/crashed (code %d); restarting",
+    "Watchdog: เครื่องมือหยุดหลังรันมา %ds สตาร์ทใหม่ครั้งที่ %d": "Watchdog: the tool stopped after running %ds; restart #%d",
+    "Watchdog ทำงาน (Ctrl+C เพื่อหยุด) — เครื่องมือจะสตาร์ทเองถ้าถูกฆ่า": "Watchdog running (Ctrl+C to stop) — the tool restarts itself if killed",
+    "เขียนไฟล์คำแปลแล้ว: %s (แก้ได้ แล้วเปิดโปรแกรมใหม่)": "Wrote the translation file: %s (edit it, then restart the program)",
+    "โหลดคำแปลเพิ่มเติม %d รายการจาก lang_en.json": "Loaded %d extra translation(s) from lang_en.json",
+})
+
+EN.update({
+    "เริ่มใช้งาน": "Run",
+    "บัญชี Roblox": "Roblox accounts",
+    "แจ้งเตือน / ควบคุมระยะไกล": "Alerts / remote control",
+    "เครื่องมือ / ระบบ": "Tools / system",
+    "อื่น ๆ": "Other",
+})
+
+
+_SPEC = re.compile(r"%%|%[-+ #0]*\d*(?:\.\d+)?[sdif]")
+_TPL = []        # (regex, english template, longest Thai chunk) for keys that contain %s / %d / %.1f
+_FRAG = []       # keys with edge spaces/colons: pieces glued to other text, replaced inside a longer string
+_TR_CACHE = {}
+
+
+def _build_tr_index():
+    """Index EN once: keys with %-placeholders become regexes (so already-formatted text still matches); fragment keys are kept for in-string replace."""
+    _TPL.clear()
+    _FRAG.clear()
+    for k, v in EN.items():
+        parts = _SPEC.split(k)
+        specs = _SPEC.findall(k)
+        if any(s != "%%" for s in specs):
+            rx = "^"
+            for p, s in zip(parts, specs + [""]):
+                rx += re.escape(p)
+                if s == "%s":
+                    rx += "(.*?)"
+                elif s == "%%":
+                    rx += "%"
+                elif s.endswith(("d", "i")):
+                    rx += "(-?\\d+)"
+                elif s:
+                    rx += "(-?\\d+(?:\\.\\d+)?)"
+            rx += "$"
+            _TPL.append((re.compile(rx, re.S), v, max(parts, key=len), [s for s in specs if s != "%%"]))
+        elif k != k.strip() or k.rstrip().endswith(":"):
+            _FRAG.append((k, v))
+    _TPL.sort(key=lambda t: -len(t[2]))
+    _FRAG.sort(key=lambda t: -len(t[0]))
+
+
+def _fill(tpl, specs, groups):
+    """Put the captured values into the English template, in order, without Python's % operator (safe for literal % signs)."""
+    it = iter(zip(specs, groups))
+
+    def rep(m):
+        if m.group(0) == "%%":
+            return "%"
+        sp, g = next(it, (None, ""))
+        return _tr_raw(g) if sp == "%s" else g
+
+    return _SPEC.sub(rep, tpl)
+
+
+def _tr_raw(s):
+    """Translate one Thai string -> English: exact key, then placeholder template, then glued fragments."""
+    if not s or not re.search("[\u0e00-\u0e7f]", s):
+        return s
+    r = EN.get(s)
+    if r is not None:
+        return r
+    core = s.rstrip(" :?\n\t")
+    if core != s and core in EN:             # "label:" / "text\n" -> translate the text, keep the trailing punctuation/newline
+        return EN[core] + s[len(core):]
+    if not _TPL and not _FRAG:
+        _build_tr_index()
+    for rx, tpl, chunk, specs in _TPL:
+        if chunk in s:
+            m = rx.match(s)
+            if m:
+                return _fill(tpl, specs, m.groups())
+    for k, v in _FRAG:
+        if k in s:
+            s = s.replace(k, v)
+    # leftover whole Thai words that have their own translation (e.g. the "ปิด" after "...(streamer): ")
+    return re.sub("[\u0e00-\u0e7f]+", lambda mo: EN.get(mo.group(0), mo.group(0)), s)
+
+
 def tr(s):
-    """UI language: Thai text -> English when the English UI is on (strings without a translation stay as they are)."""
-    return EN.get(s, s) if (LANG["en"] and isinstance(s, str)) else s
+    """UI language: Thai text -> English when the English UI is on (anything without a translation stays as it is)."""
+    if not (LANG["en"] and isinstance(s, str)):
+        return s
+    r = _TR_CACHE.get(s)
+    if r is None:
+        r = _tr_raw(s)
+        if len(_TR_CACHE) > 4000:
+            _TR_CACHE.clear()
+        _TR_CACHE[s] = r
+    return r
 
 
 class Table(_RichTable):
@@ -163,6 +781,39 @@ class Table(_RichTable):
 
     def add_row(self, *cells, **kw):
         return super().add_row(*[tr(c) for c in cells], **kw)
+
+class Text(_RichText):
+    """rich Text that translates plain Thai strings (text, assemble() parts, append()) when the English UI is on."""
+
+    def __init__(self, text="", *a, **kw):
+        super().__init__(tr(text), *a, **kw)
+
+    @classmethod
+    def assemble(cls, *parts, **kw):
+        """Same as rich's Text.assemble, translating each string part (or the first item of a (text, style) pair)."""
+        fixed = []
+        for p in parts:
+            if isinstance(p, str):
+                p = tr(p)
+            elif isinstance(p, tuple) and p and isinstance(p[0], str):
+                p = (tr(p[0]),) + tuple(p[1:])
+            fixed.append(p)
+        return _RichText.assemble(*fixed, **kw)
+
+    def append(self, text, style=None):
+        """Append text (translated if it is a plain string)."""
+        return super().append(tr(text) if isinstance(text, str) else text, style)
+
+
+class Panel(_RichPanel):
+    """rich Panel whose title/subtitle are translated."""
+
+    def __init__(self, renderable, *a, **kw):
+        for k in ("title", "subtitle"):
+            if isinstance(kw.get(k), str):
+                kw[k] = tr(kw[k])
+        super().__init__(renderable, *a, **kw)
+
 
 TERMUX = "/data/data/com.termux/files"
 LOGO = r"""
@@ -1199,9 +1850,9 @@ class Hook:
             return True
         if not w["url"]:
             return False
-        embed = {"title": scrub(title), "description": scrub(desc), "color": EV_COLOR.get(event, 0),
+        embed = {"title": scrub(tr(title)), "description": scrub(tr(desc)), "color": EV_COLOR.get(event, 0),
                  "timestamp": datetime.now(timezone.utc).isoformat(), "footer": {"text": webhook_footer(w)},
-                 "fields": [{"name": scrub(k), "value": scrub(v) or "-", "inline": True} for k, v in (fields or [])]}
+                 "fields": [{"name": scrub(tr(k)), "value": scrub(tr(v)) or "-", "inline": True} for k, v in (fields or [])]}
         if shot and not (w["send_screenshot"] and os.path.exists(shot)):
             shot = None
         payload = {"username": "GARNT TOOL REJOIN", "embeds": [embed]}
@@ -1870,7 +2521,7 @@ class ConsoleHook:
     def _post(self, text):
         try:
             for _ in range(2):
-                r = requests.post(self.url(), json={"username": "GARNT CONSOLE", "content": "```\n%s\n```" % text}, timeout=15)
+                r = requests.post(self.url(), json={"username": "GARNT CONSOLE", "content": "```\n%s\n```" % "\n".join(tr(l) for l in text.split("\n"))}, timeout=15)
                 if r.status_code == 429:
                     time.sleep(min(float(r.json().get("retry_after", 2)), 10))
                     continue
@@ -2724,7 +3375,7 @@ class RemoteBot:
     def say(self, text):
         r = self.cfg.d["remote"]
         try:
-            RemoteBot.api(r["bot_token"], "sendMessage", {"chat_id": r["chat_id"], "text": hide_users(scrub(text))[:3500]})
+            RemoteBot.api(r["bot_token"], "sendMessage", {"chat_id": r["chat_id"], "text": hide_users(scrub(tr(text)))[:3500]})
         except Exception as e:
             log.debug("telegram send: %s", scrub(e))
 
@@ -2819,6 +3470,20 @@ def confirm(prompt):
 
 def pause():
     ask("กด Enter เพื่อกลับเมนู")
+
+
+def toggle_language(cfg):
+    """Switch the whole UI between Thai and English and remember the choice in config.json."""
+    LANG["en"] = not LANG["en"]
+    cfg.d["ui"]["lang"] = "en" if LANG["en"] else "th"
+    cfg.save()
+
+
+def language_label():
+    """Main-menu text for the language row: both languages shown, the active one highlighted."""
+    on, off = ("bold green", "dim")
+    return Text.assemble(("ภาษา / Language:  ", "bold"), ("ไทย", off if LANG["en"] else on), ("  ⇄  ", "dim"),
+                         ("English", on if LANG["en"] else off))
 
 
 def onoff(v):
@@ -3028,9 +3693,8 @@ def menu_settings(cfg):
         t.add_row("2", "ช่วงเวลาตรวจสอบ (วินาที)", str(cfg.d["check_interval"]))
         t.add_row("3", "หน่วงเวลาเปิดแต่ละอินสแตนซ์ (วินาที)", str(cfg.d["launch_delay"]))
         t.add_row("4", "ซ่อนชื่อบัญชี (streamer mode: โชว์ 4 ตัวแรก ที่เหลือเป็น #)", onoff(cfg.d["ui"]["streamer_mode"]))
-        t.add_row("5", "ภาษา / Language (ไทย/English)", "English" if LANG["en"] else "ไทย")
         ngl = sum(1 for k, v in (cfg.d.get("game_links") or {}).items() if parse_link(v))
-        t.add_row("6", "ตั้งแมพแยกตามแอป (Multi Map)", "%d แอป" % ngl if ngl else "ไม่ได้ใช้")
+        t.add_row("5", "ตั้งแมพแยกตามแอป (Multi Map)", "%d แอป" % ngl if ngl else "ไม่ได้ใช้")
         console.print(t)
         if p:
             say("ลิงก์ที่ใช้เปิดจริง: " + p[0], "dim")
@@ -3045,14 +3709,10 @@ def menu_settings(cfg):
             elif v:
                 cfg.d["game_link"] = v
                 cfg.save()
-        elif c == "6":
+        elif c == "5":
             menu_multi_map(cfg)
         elif c == "4":
             cfg.d["ui"]["streamer_mode"] = STREAMER["on"] = not cfg.d["ui"]["streamer_mode"]
-            cfg.save()
-        elif c == "5":
-            LANG["en"] = not LANG["en"]
-            cfg.d["ui"]["lang"] = "en" if LANG["en"] else "th"
             cfg.save()
         elif c in ("2", "3"):
             key, lo = ("check_interval", 10) if c == "2" else ("launch_delay", 0)
@@ -4876,7 +5536,7 @@ def menu_extra(cfg):
             else:
                 try:
                     ok = RemoteBot.api(r["bot_token"], "sendMessage", {"chat_id": r["chat_id"],
-                                       "text": "GARNT TOOL REJOIN: ทดสอบบอท ✅\n" + TG_HELP}, timeout=20).status_code == 200
+                                       "text": tr("GARNT TOOL REJOIN: ทดสอบบอท ✅\n") + tr(TG_HELP)}, timeout=20).status_code == 200
                 except Exception:
                     ok = False
                 say("ส่งสำเร็จ" if ok else "ส่งไม่สำเร็จ ตรวจสอบ token / Chat ID (ต้องกด Start กับบอทก่อน)", "green" if ok else "red")
@@ -4889,7 +5549,103 @@ MENU = [("1", "เริ่มรีจอยอัตโนมัติ"), ("2"
         ("5", "คุกกี้ (ล็อกอิน / ดึงจากแอป Roblox / ล็อกเอาต์)"), ("6", "ตั้งค่าอัตโนมัติ"), ("7", "Discord Webhook"), ("8", "บล็อก / เลิกบล็อก / เพิ่มเพื่อน (ด้วยคุกกี้)"),
         ("9", "เปิด / ปิด Roblox ทั้งหมด (ตั้งหน่วงเวลาได้)"), ("10", "แสดงรายการอินสแตนซ์"), ("11", "อัปเดตเครื่องมือ (เช็คเวอร์ชันก่อน)"),
         ("12", "เทสเครื่อง Cloud Phone (CPU / RAM / GPU)"), ("13", "สำรอง/กู้ค่า + ดู log + แจ้งเตือนผิดปกติ"),
-        ("14", "ฟีเจอร์เสริม (บอท Telegram / ตรวจแบน / สลับบัญชี)"), ("0", "ออก")]
+        ("14", "ฟีเจอร์เสริม (บอท Telegram / ตรวจแบน / สลับบัญชี)"), ("15", "ภาษา / Language"), ("16", "ตรวจระบบ (สิทธิ์ / รูท / ลิงก์ / พอร์ต / autoexec / เน็ต)"), ("0", "ออก")]
+
+
+def load_lang_override():
+    """Merge BASE/lang_en.json (user-editable {Thai: English} pairs) over the built-in translations."""
+    p = os.path.join(BASE, "lang_en.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            extra = json.load(f)
+        extra = {k: v for k, v in extra.items() if isinstance(k, str) and isinstance(v, str)}
+    except (OSError, ValueError):
+        return 0
+    EN.update(extra)
+    _TPL.clear()
+    _FRAG.clear()
+    _TR_CACHE.clear()
+    return len(extra)
+
+
+def export_lang():
+    """Write every built-in translation to BASE/lang_en.json so it can be edited or used as a base for another language."""
+    p = os.path.join(BASE, "lang_en.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(EN, f, ensure_ascii=False, indent=1)
+    return p
+
+
+def run_watchdog():
+    """Supervisor: run the tool as a child process with auto-start on; if Android kills it, restart it and alert the webhook."""
+    detect_root()
+    cfg = Config()
+    hook = Hook(cfg)
+    say("Watchdog ทำงาน (Ctrl+C เพื่อหยุด) — เครื่องมือจะสตาร์ทเองถ้าถูกฆ่า", "cyan")
+    n = 0
+    while True:
+        t0 = time.time()
+        rc = subprocess.call([sys.executable, os.path.abspath(__file__)], env=dict(os.environ, GARNT_AUTOSTART="1"))
+        if rc == 0:
+            return 0
+        up = int(time.time() - t0)
+        n = 1 if up >= 600 else n + 1
+        hook.send("crash", "🛡️ Watchdog: เครื่องมือถูกปิด/ล่ม (รหัส %d) กำลังเริ่มใหม่" % rc,
+                  "Watchdog: เครื่องมือหยุดหลังรันมา %ds สตาร์ทใหม่ครั้งที่ %d" % (up, n), sync=True)
+        time.sleep(min(60, 5 * n))
+
+
+def menu_doctor(cfg):
+    """One-screen health check of everything the tool depends on (permissions, root, links, port, autoexec, network)."""
+    import socket
+    rows = []
+    rows.append((STORAGE_OK, "ที่เก็บข้อมูล /sdcard/Download เขียนได้", "เขียน /sdcard/Download ไม่ได้ ตอนนี้ใช้โฟลเดอร์สำรอง (กดอนุญาตที่เก็บข้อมูลให้ Termux)"))
+    rows.append((ENV.root, "โหมดรูท (su ใช้ได้)", "ไม่รูท: ใช้ได้แต่ตรวจโปรเซส/หน้าจอ/ใส่คุกกี้ไม่ได้"))
+    det = cfg.d["detected"]
+    rows.append((bool(det), "พบแพ็กเกจ Roblox %d ตัว" % len(det), "ยังไม่พบแพ็กเกจ Roblox (เมนู 4)"))
+    rows.append((bool(det) and all(parse_link(link_for(cfg, p)) for p in det), "ตั้งลิงก์เกมครบทุกแพ็กเกจ", "ยังไม่ตั้งลิงก์เกม หรือลิงก์ผิดรูปแบบ (เมนู 3)"))
+    rows.append((bool(shutil.which("termux-wake-lock")), "มีคำสั่ง termux-wake-lock", "ไม่มี termux-wake-lock (ติดตั้ง Termux:API เพื่อกันเครื่องหลับ)"))
+    rows.append((bool(shutil.which("java")), "มี Java", "ไม่มี Java (pkg install openjdk-17)"))
+    port = cfg.d["heartbeat"]["port"]
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", port))
+        free = True
+    except OSError:
+        free = False
+    finally:
+        s.close()
+    rows.append((free, "พอร์ต heartbeat %d ว่าง" % port, "พอร์ต heartbeat %d ถูกใช้อยู่ (เครื่องมืออื่นรันอยู่ หรือเปลี่ยนพอร์ตที่เมนู 6)" % port))
+    nd = sum(1 for d, _ in autoexec_targets(cfg) if os.path.isdir(os.path.dirname(d.rstrip("/")) or d))
+    rows.append((nd > 0, "พบโฟลเดอร์ autoexec %d โฟลเดอร์" % nd, "ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ (heartbeat จะไม่ถูกติดตั้งอัตโนมัติ)"))
+    try:
+        requests.get("https://www.roblox.com/", timeout=6)
+        rows.append((True, "ต่อเน็ต/Roblox ได้", ""))
+    except Exception as e:
+        rows.append((False, "", "ต่อ Roblox ไม่ได้: %s" % type(e).__name__))
+    rows.append((bool(cfg.d["webhook"]["url"]), "ตั้ง Discord webhook แล้ว", "ยังไม่ตั้ง Discord webhook (ไม่บังคับ)"))
+    banner(cfg)
+    t = Table(title="ตรวจระบบ", box=box.ROUNDED, header_style="bold cyan")
+    t.add_column("")
+    t.add_column("รายการ")
+    ok = 0
+    for good, yes, no in rows:
+        ok += bool(good)
+        t.add_row(Text("✅" if good else "⚠️"), yes if good else no)
+    console.print(t)
+    say("สรุป: ผ่าน %d | เตือน %d" % (ok, len(rows) - ok), "green" if ok == len(rows) else "yellow")
+    pause()
+
+
+MENU_GROUPS = [
+    ("เริ่มใช้งาน", ["1", "2", "10", "9"]),
+    ("ตั้งค่า", ["3", "4", "6", "5"]),
+    ("บัญชี Roblox", ["8"]),
+    ("แจ้งเตือน / ควบคุมระยะไกล", ["7", "14"]),
+    ("เครื่องมือ / ระบบ", ["13", "12", "16", "11"]),
+    ("อื่น ๆ", ["15", "0"]),
+]
+assert sorted(k for _, ks in MENU_GROUPS for k in ks) == sorted(k for k, _ in MENU)
 
 
 def ensure_java():
@@ -4917,6 +5673,7 @@ def main():
     cfg = Config()
     STREAMER["on"] = bool(cfg.d["ui"]["streamer_mode"])
     LANG["en"] = cfg.d["ui"].get("lang") == "en"
+    load_lang_override()
     setup_logging()
     ensure_java()
     hook = Hook(cfg)
@@ -4929,7 +5686,7 @@ def main():
     refresh_packages(cfg)
     if cfg.d["autoexec"]["auto_create"]:
         report_autoexec(cfg, install_autoexec(cfg))
-    if cfg.d["auto"]["start_on_launch"] and cfg.d["detected"] and all(parse_link(link_for(cfg, p)) for p in cfg.d["detected"]):
+    if (cfg.d["auto"]["start_on_launch"] or os.environ.get("GARNT_AUTOSTART") == "1") and cfg.d["detected"] and all(parse_link(link_for(cfg, p)) for p in cfg.d["detected"]):
         say("เริ่มอัตโนมัติใน 5 วินาที (Ctrl+C เพื่อยกเลิก)", "yellow")
         try:
             time.sleep(5)
@@ -4938,8 +5695,14 @@ def main():
             pass
     while True:
         banner(cfg)
-        for k, label in MENU:
-            console.print(Text.assemble(("  [%s] " % k, "bold cyan"), (tr(label), "bold" if k != "0" else "red")))
+        labels = dict(MENU)
+        for title, keys in MENU_GROUPS:
+            console.print(Text("  ── " + tr(title) + " ──", style="bold magenta"))
+            for k in keys:
+                if k == "15":
+                    console.print(Text.assemble(("    [%s] " % k, "bold cyan"), language_label()))
+                else:
+                    console.print(Text.assemble(("    [%s] " % k, "bold cyan"), (labels[k], "bold" if k != "0" else "red")))
         console.print()
         c = ask("เลือกเมนู:")
         if c == "1":
@@ -4970,6 +5733,10 @@ def main():
             menu_tools(cfg)
         elif c == "14":
             menu_extra(cfg)
+        elif c == "15" or c.lower() in ("l", "lang"):
+            toggle_language(cfg)
+        elif c == "16":
+            menu_doctor(cfg)
         elif c == "0":
             say("ลาก่อน!", "cyan")
             return
@@ -4978,6 +5745,14 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].lower() in ("update", "--update", "-u"):
         sys.exit(0 if run_update() != "error" else 1)
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("watch", "--watch", "watchdog"):
+        try:
+            sys.exit(run_watchdog())
+        except KeyboardInterrupt:
+            sys.exit(0)
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("export-lang", "--export-lang"):
+        say("เขียนไฟล์คำแปลแล้ว: %s (แก้ได้ แล้วเปิดโปรแกรมใหม่)" % export_lang())
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1].lower() in ("rollback", "--rollback"):
         sys.exit(0 if run_rollback() == "ok" else 1)
     try:
