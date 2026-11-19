@@ -47,7 +47,7 @@ except ImportError as _e:
     print("ไม่พบไลบรารีที่จำเป็น: %s\nรันคำสั่ง: pip install -r requirements.txt" % _e)
     sys.exit(1)
 
-VERSION = "2.9"
+VERSION = "2.7"
 FPS_CAP_MIN, FPS_CAP_MAX = 5, 240
 ARCEUS_AUTOEXEC = "/storage/emulated/0/Arceus X/Autoexec"
 EXTRA_EXEC_DIRS = (
@@ -178,7 +178,7 @@ EN.update({
     "สร้างแล้ว": "created",
     "อัปเดตแล้ว": "updated",
     "ข้าม (มีไฟล์ชื่อเดียวกันที่ไม่ใช่ของเครื่องมือ)": "skipped (a file with the same name exists that isn't the tool's)",
-    "เปิดใช้ heartbeat ให้แล้ว (ปิดได้ที่ เมนู 6 > Heartbeat > 1)": "Heartbeat enabled for you (turn it off at menu 6 > Heartbeat > 1)",
+    "เปิดใช้ heartbeat ให้แล้ว (ปิดได้ที่ เมนู 7 > Heartbeat > 1)": "Heartbeat enabled for you (turn it off at menu 7 > Heartbeat > 1)",
     "error: ชื่อไฟล์ไม่ถูกต้อง (ใช้ .lua หรือ .txt และห้ามซ้ำ heartbeat)": "error: invalid file name (use .lua or .txt and don't reuse \"heartbeat\")",
     "คำสั่ง: rejoin <เลข|all> | pause <เลข|all> | resume <เลข|all> | status | ram | shot | streamer | help | quit": "Commands: rejoin <n|all> | pause <n|all> | resume <n|all> | status | ram | shot | streamer | help | quit",
     "แอปปิด/ค้าง (ไม่พบโปรเซส)": "App closed/hung (process not found)",
@@ -303,9 +303,9 @@ EN.update({
     "ตั้งแล้ว": "set",
     "ยังไม่ตั้ง": "not set",
     "โฟลเดอร์: ": "Folder: ",
-    "🆕 มีเวอร์ชันใหม่ v%s (ตอนนี้ v%s) → เลือกเมนู 11 เพื่ออัปเดต": "🆕 New version v%s available (current v%s) → choose menu 11 to update",
-    "ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน": "No Roblox packages found; go to menu 4 and scan first",
-    "ยังไม่ได้ตั้งลิงก์เกม (หรือลิงก์ไม่ถูกต้อง) ไปที่เมนู 3 ก่อน": "Game link not set (or invalid); go to menu 3 first",
+    "🆕 มีเวอร์ชันใหม่ v%s (ตอนนี้ v%s) → เลือกเมนู 15 เพื่ออัปเดต": "🆕 New version v%s available (current v%s) → choose menu 15 to update",
+    "ไม่พบแพ็กเกจ Roblox ไปที่เมนู 6 เพื่อสแกนก่อน": "No Roblox packages found; go to menu 6 and scan first",
+    "ยังไม่ได้ตั้งลิงก์เกม (หรือลิงก์ไม่ถูกต้อง) ไปที่เมนู 5 ก่อน": "Game link not set (or invalid); go to menu 5 first",
     " | แอปที่ยังไม่มีลิงก์: ": " | apps without a link: ",
     "กำลังดึงคุกกี้จากแอป %d อินสแตนซ์ที่ยังไม่มีคุกกี้...": "Pulling cookies from %d instance apps that have none yet...",
     "ได้คุกกี้ของ ": "Got the cookie of ",
@@ -321,7 +321,7 @@ EN.update({
     "ไม่รูท": "non-root",
     " | โหมดไม่รูทตรวจโปรเซส/หน้าจอไม่ได้": " | non-root mode can't check the process/foreground",
     "แผงสดรีเฟรชอัตโนมัติ — กด Enter หรือ Ctrl+C เพื่อกลับเมนู": "Live panel refreshes automatically — press Enter or Ctrl+C to return to the menu",
-    "ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)": "No packages found; try menu 4 (scan packages)",
+    "ยังไม่พบแพ็กเกจ ลองเมนู 6 (สแกนแพ็กเกจ)": "No packages found; try menu 6 (scan packages)",
     "ลิงก์ที่ใช้เปิดจริง": "Link actually used to launch",
     " [หลัก]": " [main]",
     "เลขแอป (เช่น 1,3) = ตั้งแมพให้แอปนั้น | a = ทุกแอป | c = ล้างแมพเฉพาะแอปทั้งหมด (กลับไปใช้ลิงก์หลัก)": "App number (e.g. 1,3) = set a map for that app | a = all apps | c = clear all per-app maps (back to the main link)",
@@ -398,7 +398,7 @@ EN.update({
     "ปิด Roblox ทั้งหมด (force-stop ทุกอินสแตนซ์ที่สแกนเจอ ต้องใช้รูท)": "Close all Roblox (force-stop every scanned instance; root required)",
     "ค่าหน่วงใหม่ (0-600):": "New delay (0-600):",
     "ค่าต้องอยู่ระหว่าง 0-600": "Value must be between 0-600",
-    "ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)": "No cookies in cookie.txt yet (menu 5)",
+    "ยังไม่มีคุกกี้ใน cookie.txt (เมนู 8)": "No cookies in cookie.txt yet (menu 8)",
     "กำลังตรวจบัญชีจากคุกกี้...": "Checking accounts from cookies...",
     "บล็อก / เพื่อน (ด้วยบัญชีจากคุกกี้)": "Block / friends (using accounts from cookies)",
     "บล็อกผู้ใช้": "Block a user",
@@ -417,7 +417,7 @@ EN.update({
     "ดึงได้ ใช้ได้: ": "Pulled, valid: ",
     "บันทึก %d ตัวลง cookie.txt (แทนที่บรรทัดของอินสแตนซ์นั้น)?": "Save %d to cookie.txt (replacing that instance's line)?",
     "บันทึกแล้ว %d บรรทัด → ": "Saved %d line(s) → ",
-    "ตอนรีจอยจะใช้คุกกี้เหล่านี้เช็คสถานะในเกมผ่าน API (เปิด \"ตรวจสถานะในเกมผ่าน Roblox API\" ที่เมนู 6)": "When rejoining, these cookies are used to check in-game status via the API (turn on \"Check in-game status via Roblox API\" at menu 6)",
+    "ตอนรีจอยจะใช้คุกกี้เหล่านี้เช็คสถานะในเกมผ่าน API (เปิด \"ตรวจสถานะในเกมผ่าน Roblox API\" ที่เมนู 7)": "When rejoining, these cookies are used to check in-game status via the API (turn on \"Check in-game status via Roblox API\" at menu 7)",
     "ค่าใหม่ (ตัวเลข):": "New value (number):",
     "ไม่ตั้ง": "not set",
     "%d บัญชี, ค่าเริ่มต้น %s": "%d account(s), default %s",
@@ -425,7 +425,7 @@ EN.update({
     "ค่าต้องอยู่ระหว่าง %d-%d": "Value must be between %d-%d",
     "%s: ดึงคุกกี้จากแอปไม่ได้ (%s)": "%s: can't pull the cookie from the app (%s)",
     "ไม่รูท: ดึงคุกกี้จากแอปไม่ได้ ใช้เฉพาะคุกกี้ใน cookie.txt": "Non-root: can't pull cookies from apps; only cookies in cookie.txt are used",
-    "ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5) และไม่รูทจึงดึงจากแอปไม่ได้": "No cookies in cookie.txt (menu 5) and non-root, so they can't be pulled from the apps",
+    "ยังไม่มีคุกกี้ใน cookie.txt (เมนู 8) และไม่รูทจึงดึงจากแอปไม่ได้": "No cookies in cookie.txt (menu 8) and non-root, so they can't be pulled from the apps",
     "กำลังดึงคุกกี้จากทุกแอป แล้วอ่าน Roblox ID...": "Pulling cookies from all apps, then reading Roblox IDs...",
     "ไม่พบบัญชีที่ใช้ได้": "No usable accounts found",
     "สคริปต์ใหม่จะมีผลตอนเข้าเกมครั้งถัดไป (รีจอยหรือเปิดเกมใหม่) ต้องมี setfpscap ในเอ็กซิคิวเตอร์": "The new script takes effect the next time you join a game (rejoin or relaunch); the executor needs setfpscap",
@@ -510,7 +510,7 @@ EN.update({
     "กำลังดึงชื่อบัญชี / Roblox ID จากคุกกี้...": "Fetching account names / Roblox IDs from cookies...",
     "รายการอินสแตนซ์ (%d)": "Instances (%d)",
     "เลือกรัน %d/%d | คุกกี้ในไฟล์ %d บรรทัด | ลิงก์เกม: %s": "Selected %d/%d | cookies in file %d lines | game link: %s",
-    "v%s -> v%s  (เมนู 11 หรือ python rejoin.py update)": "v%s -> v%s  (menu 11 or python rejoin.py update)",
+    "v%s -> v%s  (เมนู 15 หรือ python rejoin.py update)": "v%s -> v%s  (menu 15 or python rejoin.py update)",
     "🆕 มีเวอร์ชันใหม่": "🆕 New version available",
     "เวอร์ชันปัจจุบัน v%s กำลังเช็คเวอร์ชันบน GitHub...": "Current version v%s; checking the version on GitHub...",
     "ต่อ GitHub ไม่ได้: %s": "Can't reach GitHub: %s",
@@ -584,7 +584,7 @@ EN.update({
     "ภายในกี่นาที (1-1440)": "Within how many minutes (1-1440)",
     "เว้นกี่นาทีก่อนแจ้งซ้ำ (1-1440)": "Minutes before alerting again (1-1440)",
     "แจ้งเมื่อแรมว่างต่ำกว่า MB (0=ใช้ค่าของล้างแรม)": "Alert when free RAM is below (MB, 0=use the RAM-clear value)",
-    "แจ้งเตือนผิดปกติ (ส่งเข้า Discord ผ่านเหตุการณ์ \"แจ้งเตือนผิดปกติ\" ในเมนู 7)": "Anomaly alerts (sent to Discord via the \"Anomaly alert\" event in menu 7)",
+    "แจ้งเตือนผิดปกติ (ส่งเข้า Discord ผ่านเหตุการณ์ \"แจ้งเตือนผิดปกติ\" ในเมนู 10)": "Anomaly alerts (sent to Discord via the \"Anomaly alert\" event in menu 10)",
     "สำรอง/กู้ค่า + log + แจ้งเตือน": "Backup/restore + logs + alerts",
     "สำรองค่าตั้งค่า (config.json -> backup/)": "Back up settings (config.json -> backup/)",
     "กู้ค่าตั้งค่าจากไฟล์สำรอง": "Restore settings from a backup file",
@@ -622,8 +622,8 @@ EN.update({
     "ตรวจโค้ดที่ดาวน์โหลดมาให้แน่ใจก่อนใช้ (สคริปต์จะรันในเกมของทุกบัญชี)": "Review the downloaded code before using it (the script will run in every account's game)",
     "ไม่มีโค้ด": "No code",
     "ข้าม (มีไฟล์ชื่อนี้ที่ไม่ใช่ของเครื่องมือ)": "skipped (a file with this name exists that isn't the tool's)",
-    "ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ที่ติดตั้งอยู่ (ตั้งที่ เมนู 6 > Heartbeat > 6)": "No installed executor's autoexec folder found (set it at menu 6 > Heartbeat > 6)",
-    "ตัวเปิด/ปิดฟีเจอร์ตรวจแบน, หยุดเมื่อเจอ Captcha, สลับบัญชี, รีจอยทุกตัวเมื่อหลุด อยู่ที่ เมนู 6": "The toggles for ban check, pause on Captcha, account switching and rejoin-all-on-drop are in menu 6",
+    "ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ที่ติดตั้งอยู่ (ตั้งที่ เมนู 7 > Heartbeat > 6)": "No installed executor's autoexec folder found (set it at menu 7 > Heartbeat > 6)",
+    "ตัวเปิด/ปิดฟีเจอร์ตรวจแบน, หยุดเมื่อเจอ Captcha, สลับบัญชี, รีจอยทุกตัวเมื่อหลุด อยู่ที่ เมนู 7": "The toggles for ban check, pause on Captcha, account switching and rejoin-all-on-drop are in menu 7",
     "ค่าใหม่ (%d-%d):": "New value (%d-%d):",
     "วาง Bot token จาก @BotFather (Enter=ลบ):": "Paste the Bot token from @BotFather (Enter=delete):",
     "รูปแบบ token ไม่ถูกต้อง": "Invalid token format",
@@ -653,15 +653,15 @@ EN.update({
     "โหมดรูท (su ใช้ได้)": "Root mode (su works)",
     "ไม่รูท: ใช้ได้แต่ตรวจโปรเซส/หน้าจอ/ใส่คุกกี้ไม่ได้": "Non-root: works, but can't check process/foreground or inject cookies",
     "พบแพ็กเกจ Roblox %d ตัว": "Found %d Roblox package(s)",
-    "ยังไม่พบแพ็กเกจ Roblox (เมนู 4)": "No Roblox packages found (menu 4)",
+    "ยังไม่พบแพ็กเกจ Roblox (เมนู 6)": "No Roblox packages found (menu 6)",
     "ตั้งลิงก์เกมครบทุกแพ็กเกจ": "Game link set for every package",
-    "ยังไม่ตั้งลิงก์เกม หรือลิงก์ผิดรูปแบบ (เมนู 3)": "Game link missing or invalid (menu 3)",
+    "ยังไม่ตั้งลิงก์เกม หรือลิงก์ผิดรูปแบบ (เมนู 5)": "Game link missing or invalid (menu 5)",
     "มีคำสั่ง termux-wake-lock": "termux-wake-lock is available",
     "ไม่มี termux-wake-lock (ติดตั้ง Termux:API เพื่อกันเครื่องหลับ)": "termux-wake-lock missing (install Termux:API to keep the device awake)",
     "มี Java": "Java is installed",
     "ไม่มี Java (pkg install openjdk-17)": "Java missing (pkg install openjdk-17)",
     "พอร์ต heartbeat %d ว่าง": "Heartbeat port %d is free",
-    "พอร์ต heartbeat %d ถูกใช้อยู่ (เครื่องมืออื่นรันอยู่ หรือเปลี่ยนพอร์ตที่เมนู 6)": "Heartbeat port %d is in use (another instance is running, or change it in menu 6)",
+    "พอร์ต heartbeat %d ถูกใช้อยู่ (เครื่องมืออื่นรันอยู่ หรือเปลี่ยนพอร์ตที่เมนู 7)": "Heartbeat port %d is in use (another instance is running, or change it in menu 7)",
     "พบโฟลเดอร์ autoexec %d โฟลเดอร์": "Found %d autoexec folder(s)",
     "ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ (heartbeat จะไม่ถูกติดตั้งอัตโนมัติ)": "No executor autoexec folder found (heartbeat won't be installed automatically)",
     "ต่อเน็ต/Roblox ได้": "Internet/Roblox reachable",
@@ -942,9 +942,9 @@ DEFAULTS = {
     "game_links": {},   # multi map: {แพ็กเกจ: ลิงก์เกม/Place ID} ใช้แทนลิงก์หลักเฉพาะแอปนั้น (ว่าง = ใช้ลิงก์หลัก)
     "check_interval": 30,
     "launch_delay": 15,
-    "friend_gap_sec": 8,   # เพิ่มเพื่อน (เมนู 8 ข้อ 4): เว้นอย่างน้อยกี่วินาทีระหว่างสองคำขอจากบัญชีเดียวกัน (กัน HTTP 429)
+    "friend_gap_sec": 8,   # เพิ่มเพื่อน (เมนู 9 ข้อ 4): เว้นอย่างน้อยกี่วินาทีระหว่างสองคำขอจากบัญชีเดียวกัน (กัน HTTP 429)
     "block_gap_sec": 20,   # social menu item 5: min seconds between two blocks from the SAME account (Roblox ~3/min per cookie)
-    "open_all_delay": 10,   # main menu 9: seconds between opening each Roblox instance
+    "open_all_delay": 10,   # main menu 4: seconds between opening each Roblox instance
     "package_prefix": "com.roblox.",
     "extra_prefixes": ["aya."],   # also scanned / protected / checked exactly like package_prefix
     "packages": [],          # empty = run every detected package
@@ -2332,7 +2332,7 @@ def report_autoexec(cfg, results, quiet_ok=True):
         cfg.d["autoexec"]["enabled_once"] = True
         cfg.d["heartbeat"]["enabled"] = True       # first install only: turn heartbeat on (later changes are yours)
         cfg.save()
-        say("เปิดใช้ heartbeat ให้แล้ว (ปิดได้ที่ เมนู 6 > Heartbeat > 1)", "cyan")
+        say("เปิดใช้ heartbeat ให้แล้ว (ปิดได้ที่ เมนู 7 > Heartbeat > 1)", "cyan")
 
 
 CUSTOM_MARK = "-- GARNT custom script"
@@ -3509,7 +3509,7 @@ def banner(cfg):
                                   "green" if cfg.d["webhook"]["enabled"] else "red")))
     console.print(Text("โฟลเดอร์: " + BASE, style="dim"))
     if UPDATE_INFO["remote"]:
-        console.print(Text("🆕 มีเวอร์ชันใหม่ v%s (ตอนนี้ v%s) → เลือกเมนู 11 เพื่ออัปเดต" % (UPDATE_INFO["remote"], VERSION), style="bold yellow"))
+        console.print(Text("🆕 มีเวอร์ชันใหม่ v%s (ตอนนี้ v%s) → เลือกเมนู 15 เพื่ออัปเดต" % (UPDATE_INFO["remote"], VERSION), style="bold yellow"))
     console.print()
 
 
@@ -3532,11 +3532,11 @@ def menu_start(cfg, hook):
     parsed = parse_link(cfg.d["game_link"]) or ("", "")
     pkgs = selected_packages(cfg)
     if not pkgs:
-        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 6 เพื่อสแกนก่อน", "red")
         return pause()
     nolink = [p for p in pkgs if not parse_link(link_for(cfg, p))]
     if nolink:
-        say("ยังไม่ได้ตั้งลิงก์เกม (หรือลิงก์ไม่ถูกต้อง) ไปที่เมนู 3 ก่อน" +
+        say("ยังไม่ได้ตั้งลิงก์เกม (หรือลิงก์ไม่ถูกต้อง) ไปที่เมนู 5 ก่อน" +
             ("" if len(nolink) == len(pkgs) else " | แอปที่ยังไม่มีลิงก์: " + ", ".join(nolink)), "red")
         return pause()
     if cfg.d["auto"]["cookie_pull_on_start"] and ENV.root:
@@ -3621,7 +3621,7 @@ def status_view(cfg, info, buf=""):
 
 def menu_status(cfg):
     if not cfg.d["detected"]:
-        say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
+        say("ยังไม่พบแพ็กเกจ ลองเมนู 6 (สแกนแพ็กเกจ)", "red")
         return pause()
     info = cookie_pairs(cfg)
     pf = cfg.d["performance"]
@@ -4161,7 +4161,7 @@ def launch_all_roblox(cfg):
     """เปิด Roblox ทุกอินสแตนซ์ที่เลือกทีละตัว หน่วง open_all_delay วินาที (ค่าเริ่มต้น 10) ระหว่างตัว"""
     pkgs = selected_packages(cfg)
     if not pkgs:
-        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 6 เพื่อสแกนก่อน", "red")
         return pause()
     try:
         delay = max(0, int(cfg.d.get("open_all_delay", 10)))
@@ -4190,7 +4190,7 @@ def kill_all_roblox(cfg):
     """ปิด Roblox ทุกอินสแตนซ์ที่สแกนเจอ (force-stop) ต้องใช้รูท"""
     pkgs = list(cfg.d["detected"])
     if not pkgs:
-        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 6 เพื่อสแกนก่อน", "red")
         return pause()
     if not ENV.root:
         say("ปิดแอปอื่นไม่ได้ถ้าไม่มีรูท (force-stop ต้องใช้สิทธิ์รูท)", "red")
@@ -4241,7 +4241,7 @@ def menu_open_all(cfg):
 
 def menu_social(cfg):
     if not cookie_pairs(cfg)[0]:
-        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5)", "red")
+        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 8)", "red")
         return pause()
     say("กำลังตรวจบัญชีจากคุกกี้...", "dim")
     accts = social_accounts(cfg)
@@ -4317,7 +4317,7 @@ def menu_cookie_pull(cfg):
         return pause()
     det = cfg.d["detected"]
     if not det:
-        say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
+        say("ยังไม่พบแพ็กเกจ ลองเมนู 6 (สแกนแพ็กเกจ)", "red")
         return pause()
     say("กำลังอ่านคุกกี้จากแอป %d อินสแตนซ์ แล้วตรวจกับ Roblox API..." % len(det), "dim")
     results = pull_validated(det)
@@ -4334,7 +4334,7 @@ def menu_cookie_pull(cfg):
     if found and confirm("บันทึก %d ตัวลง cookie.txt (แทนที่บรรทัดของอินสแตนซ์นั้น)?" % len(found)):
         n = store_cookies(cfg, found)
         say("บันทึกแล้ว %d บรรทัด → " % n + COOKIE_PATH, "green")
-        say("ตอนรีจอยจะใช้คุกกี้เหล่านี้เช็คสถานะในเกมผ่าน API (เปิด \"ตรวจสถานะในเกมผ่าน Roblox API\" ที่เมนู 6)", "dim")
+        say("ตอนรีจอยจะใช้คุกกี้เหล่านี้เช็คสถานะในเกมผ่าน API (เปิด \"ตรวจสถานะในเกมผ่าน Roblox API\" ที่เมนู 7)", "dim")
     pause()
 
 
@@ -4467,7 +4467,7 @@ def menu_fps_cap(cfg):
     if not isinstance(fc.get("accounts"), dict):
         fc["accounts"] = {}
     if not ENV.root and not cookie_pairs(cfg)[0]:
-        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 5) และไม่รูทจึงดึงจากแอปไม่ได้", "red")
+        say("ยังไม่มีคุกกี้ใน cookie.txt (เมนู 8) และไม่รูทจึงดึงจากแอปไม่ได้", "red")
         return pause()
     say("กำลังดึงคุกกี้จากทุกแอป แล้วอ่าน Roblox ID...", "dim")
     accts = fps_accounts(cfg)
@@ -4787,10 +4787,10 @@ def menu_webhook(cfg, hook):
 
 
 def menu_list(cfg):
-    """Menu 10: list of detected instances + heartbeat ID, account name and Roblox ID (name/ID fetched from the cookie)."""
+    """Menu 3: list of detected instances + heartbeat ID, account name and Roblox ID (name/ID fetched from the cookie)."""
     det = cfg.d["detected"]
     if not det:
-        say("ยังไม่พบแพ็กเกจ ลองเมนู 4 (สแกนแพ็กเกจ)", "red")
+        say("ยังไม่พบแพ็กเกจ ลองเมนู 6 (สแกนแพ็กเกจ)", "red")
         return pause()
     pairs, n_ck = cookie_pairs(cfg)
     cmap = dict(pairs)
@@ -4846,7 +4846,7 @@ def check_new_version(cfg=None, hook=None):
         if cfg and hook and cfg.d["update"].get("notified") != remote:
             cfg.d["update"]["notified"] = remote
             cfg.save()
-            hook.send("update", "🆕 มีเวอร์ชันใหม่", "v%s -> v%s  (เมนู 11 หรือ python rejoin.py update)" % (VERSION, remote))
+            hook.send("update", "🆕 มีเวอร์ชันใหม่", "v%s -> v%s  (เมนู 15 หรือ python rejoin.py update)" % (VERSION, remote))
         return remote
     except Exception as e:
         log.debug("เช็คเวอร์ชันไม่ได้: %s", scrub(e))
@@ -5314,7 +5314,7 @@ def menu_alert(cfg):
             ("low_ram_mb", "แจ้งเมื่อแรมว่างต่ำกว่า MB (0=ใช้ค่าของล้างแรม)", (0, 100000))]
     while True:
         banner(cfg)
-        t = Table(title="แจ้งเตือนผิดปกติ (ส่งเข้า Discord ผ่านเหตุการณ์ \"แจ้งเตือนผิดปกติ\" ในเมนู 7)", box=box.ROUNDED, header_style="bold cyan")
+        t = Table(title="แจ้งเตือนผิดปกติ (ส่งเข้า Discord ผ่านเหตุการณ์ \"แจ้งเตือนผิดปกติ\" ในเมนู 10)", box=box.ROUNDED, header_style="bold cyan")
         for col in ("#", "รายการ", "ค่า"):
             t.add_column(col)
         for i, (k, label, rng) in enumerate(rows, 1):
@@ -5405,7 +5405,7 @@ def menu_logout(cfg):
         return pause()
     det = cfg.d["detected"]
     if not det:
-        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 4 เพื่อสแกนก่อน", "red")
+        say("ไม่พบแพ็กเกจ Roblox ไปที่เมนู 6 เพื่อสแกนก่อน", "red")
         return pause()
     for i, p in enumerate(det, 1):
         say("  %d) %s" % (i, p))
@@ -5478,7 +5478,7 @@ def menu_import_script(cfg):
     for path, st in res:
         say("%s → %s" % (path, names.get(st, st)), "red" if st.startswith("error") else "green" if st != "skipped" else "yellow")
     if not res:
-        say("ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ที่ติดตั้งอยู่ (ตั้งที่ เมนู 6 > Heartbeat > 6)", "yellow")
+        say("ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ที่ติดตั้งอยู่ (ตั้งที่ เมนู 7 > Heartbeat > 6)", "yellow")
     pause()
 
 
@@ -5499,7 +5499,7 @@ def menu_extra(cfg):
         t.add_row("6", "Chat ID ที่อนุญาต", str(r["chat_id"]) or "(ยังไม่ตั้ง)")
         t.add_row("7", "ทดสอบบอท", "")
         console.print(t)
-        say("ตัวเปิด/ปิดฟีเจอร์ตรวจแบน, หยุดเมื่อเจอ Captcha, สลับบัญชี, รีจอยทุกตัวเมื่อหลุด อยู่ที่ เมนู 6", "dim")
+        say("ตัวเปิด/ปิดฟีเจอร์ตรวจแบน, หยุดเมื่อเจอ Captcha, สลับบัญชี, รีจอยทุกตัวเมื่อหลุด อยู่ที่ เมนู 7", "dim")
         c = ask("เลือกหมายเลข (0=กลับ)")
         if c == "0":
             return
@@ -5602,8 +5602,8 @@ def menu_doctor(cfg):
     rows.append((STORAGE_OK, "ที่เก็บข้อมูล /sdcard/Download เขียนได้", "เขียน /sdcard/Download ไม่ได้ ตอนนี้ใช้โฟลเดอร์สำรอง (กดอนุญาตที่เก็บข้อมูลให้ Termux)"))
     rows.append((ENV.root, "โหมดรูท (su ใช้ได้)", "ไม่รูท: ใช้ได้แต่ตรวจโปรเซส/หน้าจอ/ใส่คุกกี้ไม่ได้"))
     det = cfg.d["detected"]
-    rows.append((bool(det), "พบแพ็กเกจ Roblox %d ตัว" % len(det), "ยังไม่พบแพ็กเกจ Roblox (เมนู 4)"))
-    rows.append((bool(det) and all(parse_link(link_for(cfg, p)) for p in det), "ตั้งลิงก์เกมครบทุกแพ็กเกจ", "ยังไม่ตั้งลิงก์เกม หรือลิงก์ผิดรูปแบบ (เมนู 3)"))
+    rows.append((bool(det), "พบแพ็กเกจ Roblox %d ตัว" % len(det), "ยังไม่พบแพ็กเกจ Roblox (เมนู 6)"))
+    rows.append((bool(det) and all(parse_link(link_for(cfg, p)) for p in det), "ตั้งลิงก์เกมครบทุกแพ็กเกจ", "ยังไม่ตั้งลิงก์เกม หรือลิงก์ผิดรูปแบบ (เมนู 5)"))
     rows.append((bool(shutil.which("termux-wake-lock")), "มีคำสั่ง termux-wake-lock", "ไม่มี termux-wake-lock (ติดตั้ง Termux:API เพื่อกันเครื่องหลับ)"))
     rows.append((bool(shutil.which("java")), "มี Java", "ไม่มี Java (pkg install openjdk-17)"))
     port = cfg.d["heartbeat"]["port"]
@@ -5615,7 +5615,7 @@ def menu_doctor(cfg):
         free = False
     finally:
         s.close()
-    rows.append((free, "พอร์ต heartbeat %d ว่าง" % port, "พอร์ต heartbeat %d ถูกใช้อยู่ (เครื่องมืออื่นรันอยู่ หรือเปลี่ยนพอร์ตที่เมนู 6)" % port))
+    rows.append((free, "พอร์ต heartbeat %d ว่าง" % port, "พอร์ต heartbeat %d ถูกใช้อยู่ (เครื่องมืออื่นรันอยู่ หรือเปลี่ยนพอร์ตที่เมนู 7)" % port))
     nd = sum(1 for d, _ in autoexec_targets(cfg) if os.path.isdir(os.path.dirname(d.rstrip("/")) or d))
     rows.append((nd > 0, "พบโฟลเดอร์ autoexec %d โฟลเดอร์" % nd, "ไม่พบโฟลเดอร์ autoexec ของเอ็กซิคิวเตอร์ (heartbeat จะไม่ถูกติดตั้งอัตโนมัติ)"))
     try:
@@ -5646,6 +5646,16 @@ MENU_GROUPS = [
     ("อื่น ๆ", ["15", "0"]),
 ]
 assert sorted(k for _, ks in MENU_GROUPS for k in ks) == sorted(k for k, _ in MENU)
+
+# numbers shown to the user run 1,2,3... in display order; the old ids stay as internal keys ("0" = exit)
+MENU_NUM = {k: str(i) for i, k in enumerate((k for _, ks in MENU_GROUPS for k in ks if k != "0"), 1)}
+MENU_NUM["0"] = "0"
+MENU_NUM_TO_KEY = {v: k for k, v in MENU_NUM.items()}
+
+
+def menu_number(k):
+    """Number shown in the main menu for internal key k."""
+    return MENU_NUM[k]
 
 
 def ensure_java():
@@ -5699,12 +5709,14 @@ def main():
         for title, keys in MENU_GROUPS:
             console.print(Text("  ── " + tr(title) + " ──", style="bold magenta"))
             for k in keys:
+                n = menu_number(k)
                 if k == "15":
-                    console.print(Text.assemble(("    [%s] " % k, "bold cyan"), language_label()))
+                    console.print(Text.assemble(("    [%s] " % n, "bold cyan"), language_label()))
                 else:
-                    console.print(Text.assemble(("    [%s] " % k, "bold cyan"), (labels[k], "bold" if k != "0" else "red")))
+                    console.print(Text.assemble(("    [%s] " % n, "bold cyan"), (labels[k], "bold" if k != "0" else "red")))
         console.print()
         c = ask("เลือกเมนู:")
+        c = MENU_NUM_TO_KEY.get(c.strip(), c)
         if c == "1":
             menu_start(cfg, hook)
         elif c == "2":
