@@ -3033,43 +3033,44 @@ class Engine:
         return age <= gap and not rec.get("err")
 
     def check(self, inst):
-        """ลำดับเช็กว่ายังออนอยู่: 1) process  2) หน้าจอ  3) Roblox API  4) heartbeat (error Disconnected)
-        ถ้าไม่เจอ process จะไม่สั่งรีทันที: รอเช็ก API/heartbeat ก่อน (proc_wait วินาที) ถ้ายังไม่มีสัญญาณถึงค่อยถือว่า dead
+        """ลำดับเช็กว่ายังออนอยู่: 1) heartbeat  2) Roblox API  3) process (ท้ายสุด)
+        heartbeat สดและไม่มี error = ถือว่าออนเลย ไม่ต้องถาม API / ไล่โปรเซส (ลดการเรียกเชลล์รูท)
+        ถ้า heartbeat ไม่มี/เก่า → ถาม API ; ยังไม่ได้ข้อมูลถึงค่อยดูโปรเซส (ไม่เจอโปรเซส รอ proc_wait วินาทีก่อนถือว่า dead)
         การหายของ heartbeat ไม่ตัดสินที่นี่ แต่ตัดสินใน _hb_sequencer (ไล่ทีละบัญชี)"""
         now = time.time()
-        alive = proc_alive(inst.pkg)
-        if alive:
-            inst.proc_miss_at = 0.0
-        elif ENV.root:
-            pres = self.presence(inst)                       # ไม่เจอโปรเซส: ถามอย่างอื่นก่อน
-            if pres is True or self._hb_fresh(inst):
-                inst.proc_miss_at = 0.0
-                return "ok", "ไม่พบโปรเซส แต่ยังมีสัญญาณ (%s)" % ("API" if pres is True else "heartbeat")
-            if not inst.proc_miss_at:
-                inst.proc_miss_at = now
-            left = int(self.cfg.d.get("proc_wait", 20)) - (now - inst.proc_miss_at)
-            if left > 0:
-                return "procwait", "ไม่พบโปรเซส รอเช็ก API/heartbeat อีก %ds" % left
-            return "dead", REASON["dead"]
-        if ENV.root and alive and self.cfg.d["auto"]["foreground_check"]:
-            if (inst.pkg + "/") not in foreground_text():
-                return "background", REASON["background"]
-        pres = self.presence(inst)                           # ขั้น API
         who = (" [%s]" % inst.user) if inst.user else ""
-        hs = self.hb_state(inst)                             # ขั้น heartbeat (เฉพาะดู Disconnected / ข้อมูลแสดงผล)
+        hs = self.hb_state(inst)                             # ขั้น 1: heartbeat
         if hs and hs[0] == "err":
             return "disconnected", hs[1]
-        if pres is True:
-            return "ok", "อยู่ในเกม" + who
-        if pres is False:
-            if self._hb_fresh(inst):
-                return "ok", "heartbeat ยังส่ง (API ว่าไม่อยู่ในเกม อาจดีเลย์)" + who
-            return "notingame", REASON["notingame"] + who
-        if hs and hs[0] == "ok":
-            return "ok", hs[1]
-        if alive:
-            return "ok", "แอปทำงานอยู่ (ไม่มีข้อมูลสถานะเกม)"
-        return "unknown", "ไม่ทราบสถานะ (ไม่รูท/ไม่มีคุกกี้)"
+        result = None
+        if self._hb_fresh(inst):
+            inst.proc_miss_at = 0.0
+            result = ("ok", hs[1])
+        if result is None:
+            pres = self.presence(inst)                       # ขั้น 2: API
+            if pres is True:
+                inst.proc_miss_at = 0.0
+                result = ("ok", "อยู่ในเกม" + who)
+            elif pres is False:
+                result = ("notingame", REASON["notingame"] + who)
+        if result is None:
+            alive = proc_alive(inst.pkg)                     # ขั้น 3: process
+            if alive:
+                inst.proc_miss_at = 0.0
+                result = ("ok", "แอปทำงานอยู่ (ไม่มีข้อมูลสถานะเกม)")
+            elif ENV.root:
+                if not inst.proc_miss_at:
+                    inst.proc_miss_at = now
+                left = int(self.cfg.d.get("proc_wait", 20)) - (now - inst.proc_miss_at)
+                if left > 0:
+                    return "procwait", "ไม่พบโปรเซส รอเช็ก API/heartbeat อีก %ds" % left
+                return "dead", REASON["dead"]
+            else:
+                return "unknown", "ไม่ทราบสถานะ (ไม่รูท/ไม่มีคุกกี้)"
+        if result[0] == "ok" and ENV.root and self.cfg.d["auto"]["foreground_check"]:
+            if (inst.pkg + "/") not in foreground_text():    # แอปหลุดไปอยู่เบื้องหลัง
+                return "background", REASON["background"]
+        return result
 
     def _hb_sequencer(self):
         """ไล่เช็ก heartbeat ทีละบัญชีตามลำดับ (บัญชี 1 → 2 → ...) แล้ววนซ้ำ เจอแล้วข้ามไปบัญชีถัดไปทันที"""
